@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.google.android.gms.location.LocationServices
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -49,7 +50,6 @@ data class FaceScanResult(
 )
 
 @Composable
-// 🏆 架构解耦：不再接收 NavController，只接收一个无参数无返回值的 Lambda 回调函数
 fun SightingScreen(onNavigateBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -61,11 +61,13 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
     var statusText by remember { mutableStateOf("Select a photo or take a picture to scan") }
     var scanResults by remember { mutableStateOf<List<FaceScanResult>>(emptyList()) }
 
+    // 🔒 自动上传防重锁：防止 Compose 重绘导致连续发几十条通知
+    var hasAutoUploaded by remember { mutableStateOf(false) }
+
     var sightingLocation by remember { mutableStateOf("") }
     var estimatedFeatures by remember { mutableStateOf("") }
     var clothingAppearance by remember { mutableStateOf("") }
 
-    // 🌍 真实 GPS 定位引擎
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
     val locationPermissionRequest = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
         if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true) {
@@ -77,7 +79,7 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
                             val geocoder = Geocoder(context, Locale.getDefault())
                             val addresses = geocoder.getFromLocation(location.latitude, location.longitude, 1)
                             if (!addresses.isNullOrEmpty()) {
-                                sightingLocation = addresses[0].getAddressLine(0) // 拿到真实街道地址
+                                sightingLocation = addresses[0].getAddressLine(0)
                             } else {
                                 sightingLocation = "${location.latitude}, ${location.longitude}"
                             }
@@ -94,8 +96,9 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
         }
     }
 
+    // 重置状态与防重锁
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap: Bitmap? ->
-        if (bitmap != null) { selectedBitmap = bitmap; resultBitmap = null; scanResults = emptyList(); statusText = "Image loaded." }
+        if (bitmap != null) { selectedBitmap = bitmap; resultBitmap = null; scanResults = emptyList(); statusText = "Image loaded."; hasAutoUploaded = false }
     }
 
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -106,7 +109,80 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
             } else {
                 @Suppress("DEPRECATION") MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
             }
-            withContext(Dispatchers.Main) { selectedBitmap = bitmap; resultBitmap = null; scanResults = emptyList(); statusText = "Image loaded." }
+            withContext(Dispatchers.Main) { selectedBitmap = bitmap; resultBitmap = null; scanResults = emptyList(); statusText = "Image loaded."; hasAutoUploaded = false }
+        }
+    }
+
+    // ==========================================
+    // 🚨 核心逻辑：AI 匹配成功后，自动触发安全批量上传
+    // ==========================================
+    LaunchedEffect(scanResults) {
+        val matchResult = scanResults.firstOrNull { it.isMatch && it.matchedPerson != null }
+        if (matchResult != null && !hasAutoUploaded && selectedBitmap != null) {
+            hasAutoUploaded = true
+            isUploading = true
+
+            try {
+                // 1. 强力压缩：JPEG 50 防止超 Firestore 1MB 限制
+                val scaleRatio = 400f / selectedBitmap!!.width
+                val scaledBitmap = Bitmap.createScaledBitmap(selectedBitmap!!, 400, (selectedBitmap!!.height * scaleRatio).toInt(), true)
+                val baos = ByteArrayOutputStream()
+                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos)
+                val base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT)
+
+                val db = FirebaseFirestore.getInstance()
+                val currentUserId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
+                val batch = db.batch()
+
+                val newSightingRef = db.collection("Sightings").document()
+                val matchedMP = matchResult.matchedPerson!!
+
+                // 2. 存入 Sighting
+                val sightingData = SightingRecord(
+                    id = newSightingRef.id,
+                    ownerId = currentUserId,
+                    location = sightingLocation.ifBlank { "Location not provided" },
+                    estimatedFeatures = estimatedFeatures,
+                    clothingAppearance = clothingAppearance,
+                    photoBase64 = base64Image,
+                    embedding = matchResult.faceFeature,
+                    status = SightingStatus.PENDING.name,
+                    linkedMissingPersonId = matchedMP.id,
+                    aiConfidenceScore = matchResult.confidence
+                )
+                batch.set(newSightingRef, sightingData)
+
+                // 3. 准备通知
+                val notificationRef = db.collection("Notifications").document()
+                val notification = NotificationRecord(
+                    id = notificationRef.id,
+                    receiverId = matchedMP.ownerId,
+                    senderId = currentUserId,
+                    title = "🚨 Potential Match Found!",
+                    message = "Someone reported seeing a person matching your profile at ${sightingData.location}.",
+                    photoBase64 = base64Image,
+                    relatedSightingId = sightingData.id,
+                    relatedMissingPersonId = matchedMP.id
+                )
+                batch.set(notificationRef, notification)
+
+                // 4. 更新主案件状态并加入关联 ID
+                val mpRef = db.collection("MissingPersons").document(matchedMP.id)
+                batch.update(mpRef, "status", MPStatus.PENDING_VERIFICATION.name)
+                batch.update(mpRef, "linkedSightingIds", FieldValue.arrayUnion(sightingData.id))
+
+                // 5. 原子化执行
+                batch.commit().await()
+
+                isUploading = false
+                Toast.makeText(context, "✅ Match detected! Tip auto-sent to family.", Toast.LENGTH_LONG).show()
+                onNavigateBack() // 自动退回上一页
+
+            } catch (e: Exception) {
+                isUploading = false
+                hasAutoUploaded = false // 如果断网失败，允许下次重新触发
+                Toast.makeText(context, "Auto-upload failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -122,9 +198,9 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
 
         Spacer(modifier = Modifier.height(16.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            OutlinedButton(onClick = { galleryLauncher.launch("image/*") }, modifier = Modifier.weight(1f), enabled = !isProcessing) { Text("🖼️ Gallery") }
+            OutlinedButton(onClick = { galleryLauncher.launch("image/*") }, modifier = Modifier.weight(1f), enabled = !isProcessing && !isUploading) { Text("🖼️ Gallery") }
             Spacer(modifier = Modifier.width(8.dp))
-            OutlinedButton(onClick = { cameraLauncher.launch(null) }, modifier = Modifier.weight(1f), enabled = !isProcessing) { Text("📸 Camera") }
+            OutlinedButton(onClick = { cameraLauncher.launch(null) }, modifier = Modifier.weight(1f), enabled = !isProcessing && !isUploading) { Text("📸 Camera") }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -137,7 +213,6 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
                     label = { Text("Location (Tap icon for Real GPS)") },
                     trailingIcon = {
                         IconButton(onClick = {
-                            // 🌍 唤起真实 GPS 定位
                             locationPermissionRequest.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION))
                         }) { Icon(Icons.Default.LocationOn, "Get GPS", tint = MaterialTheme.colorScheme.primary) }
                     },
@@ -201,7 +276,7 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
                     }
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(55.dp), enabled = !isProcessing && selectedBitmap != null
+            modifier = Modifier.fillMaxWidth().height(55.dp), enabled = !isProcessing && selectedBitmap != null && !isUploading
         ) {
             if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary)
             else Text("Run AI Recognition", fontWeight = FontWeight.Bold)
@@ -232,88 +307,67 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = {
-                                isUploading = true
-                                scope.launch(Dispatchers.Default) {
-                                    try {
-                                        val scaleRatio = 400f / selectedBitmap!!.width
-                                        val scaledBitmap = Bitmap.createScaledBitmap(selectedBitmap!!, 400, (selectedBitmap!!.height * scaleRatio).toInt(), true)
-                                        val baos = ByteArrayOutputStream()
-                                        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
-                                        val base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT)
 
-                                        val db = FirebaseFirestore.getInstance()
-                                        val currentUserId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
-                                        val sightingData = SightingRecord(
-                                            ownerId = currentUserId,
-                                            location = sightingLocation.ifBlank { "Location not provided" },
-                                            estimatedFeatures = estimatedFeatures, clothingAppearance = clothingAppearance,
-                                            photoBase64 = base64Image, embedding = result.faceFeature,
-                                            status = SightingStatus.PENDING.name,
-                                            linkedMissingPersonId = if (result.isMatch) result.matchedPerson?.id else null,
-                                            aiConfidenceScore = result.confidence
-                                        )
+                        if (result.isMatch) {
+                            // 匹配成功时：按钮禁用并显示自动发送状态
+                            Button(
+                                onClick = { },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray),
+                                enabled = false
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Auto-Sending Tip to Family...")
+                            }
+                        } else {
+                            // 未匹配时：保留手动上传功能，存入孤立线索库
+                            Button(
+                                onClick = {
+                                    isUploading = true
+                                    scope.launch(Dispatchers.Default) {
+                                        try {
+                                            val scaleRatio = 400f / selectedBitmap!!.width
+                                            val scaledBitmap = Bitmap.createScaledBitmap(selectedBitmap!!, 400, (selectedBitmap!!.height * scaleRatio).toInt(), true)
+                                            val baos = ByteArrayOutputStream()
+                                            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos) // 同样使用 50 压缩率
+                                            val base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT)
 
-                                        // 1. 生成一个新的线索 ID
-                                        val newSightingRef = db.collection("Sightings").document()
-                                        val finalSightingData = sightingData.copy(id = newSightingRef.id)
-
-                                        // 2. 保存 Sighting 记录
-                                        newSightingRef.set(finalSightingData).await()
-
-                                        // 3. 🚨 场景 A 核心逻辑：如果 AI 发现了匹配的 Missing Person！
-                                        if (result.isMatch && result.matchedPerson != null) {
-                                            val matchedMP = result.matchedPerson!!
-
-                                            // 准备发给家属的通知
-                                            val notificationRef = db.collection("Notifications").document()
-                                            val notification = NotificationRecord(
-                                                id = notificationRef.id,
-                                                receiverId = matchedMP.ownerId, // 接收者：失踪者家属的 UID
-                                                senderId = currentUserId, // 发送者：当前好心路人的 UID
-                                                title = "🚨 Potential Match Found!",
-                                                message = "Someone reported seeing a person matching your profile at ${finalSightingData.location}.",
-                                                photoBase64 = base64Image, // 附带刚拍的照片
-                                                relatedSightingId = finalSightingData.id,
-                                                relatedMissingPersonId = matchedMP.id
+                                            val db = FirebaseFirestore.getInstance()
+                                            val currentUserId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
+                                            val sightingData = SightingRecord(
+                                                id = db.collection("Sightings").document().id,
+                                                ownerId = currentUserId,
+                                                location = sightingLocation.ifBlank { "Location not provided" },
+                                                estimatedFeatures = estimatedFeatures, clothingAppearance = clothingAppearance,
+                                                photoBase64 = base64Image, embedding = result.faceFeature,
+                                                status = SightingStatus.PENDING.name,
+                                                linkedMissingPersonId = null,
+                                                aiConfidenceScore = result.confidence
                                             )
-                                            // 保存通知到数据库
-                                            notificationRef.set(notification).await()
 
-                                            // 更新 Missing Person 的状态为 "Pending Verification" (核实线索中)
-                                            db.collection("MissingPersons").document(matchedMP.id)
-                                                .update("status", "PENDING_VERIFICATION").await()
-                                        }
+                                            // 手动上传孤立线索不涉及通知派发
+                                            db.collection("Sightings").document(sightingData.id).set(sightingData).await()
 
-                                        if (result.isMatch && result.matchedPerson != null) {
-                                            val mpRef = db.collection("MissingPersons").document(result.matchedPerson.id)
-                                            db.runTransaction { transaction ->
-                                                val mpSnapshot = transaction.get(mpRef)
-                                                // 将主案件状态变为核实中，等待家属确认
-                                                transaction.update(mpRef, "status", MPStatus.PENDING_VERIFICATION.name)
-                                            }.await()
+                                            withContext(Dispatchers.Main) {
+                                                isUploading = false
+                                                Toast.makeText(context, "✅ Saved to Orphan Clue Database", Toast.LENGTH_LONG).show()
+                                                onNavigateBack()
+                                            }
+                                        } catch (e: Exception) {
+                                            withContext(Dispatchers.Main) { isUploading = false; Toast.makeText(context, "Upload failed: ${e.message}", Toast.LENGTH_SHORT).show() }
                                         }
-
-                                        withContext(Dispatchers.Main) {
-                                            isUploading = false
-                                            Toast.makeText(context, "✅ Tip uploaded & family notified!", Toast.LENGTH_LONG).show()
-                                            // 💡 架构解耦：通过对讲机喊总指挥退回主页，不再自己操作 navController
-                                            onNavigateBack()
-                                        }
-                                    } catch (e: Exception) {
-                                        withContext(Dispatchers.Main) { isUploading = false; Toast.makeText(context, "Upload failed: ${e.message}", Toast.LENGTH_SHORT).show() }
                                     }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                enabled = !isUploading
+                            ) {
+                                if (isUploading) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
+                                else {
+                                    Icon(Icons.Default.Send, null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Save to Orphan Clue Database")
                                 }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = if(result.isMatch) Color.DarkGray else MaterialTheme.colorScheme.primary),
-                            enabled = !isUploading
-                        ) {
-                            if (isUploading) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
-                            else {
-                                Icon(Icons.Default.Send, null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp))
-                                Text(if (result.isMatch) "Send Tip to Family (Awaiting Confirmation)" else "Save to Orphan Clue Database")
                             }
                         }
                     }

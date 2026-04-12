@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.ui.graphics.vector.ImageVector
 
 /**
@@ -23,4 +24,12 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector)
     object Sighting : Screen("sighting", "Report Sighting", Icons.Default.Search)
 
     object Profile : Screen("profile", "Profile", Icons.Default.Person)
+
+    // ... 你的其他 Screen ...
+
+    // 💡 新增：时间线页面（带 ID 参数）
+    object CaseTimeline : Screen("case_timeline/{id}", "Case Timeline", Icons.Default.Info) {
+        // 辅助函数：用于生成跳转时的具体 URL
+        fun createRoute(id: String) = "case_timeline/$id"
+    }
 }

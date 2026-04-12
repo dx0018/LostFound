@@ -15,16 +15,40 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(onLogout: () -> Unit = {}) {
     val navController = rememberNavController()
-    // 💡 替换为你设计的三个核心功能栏
     val bottomBarItems = listOf(Screen.Home, Screen.AddAction, Screen.Alerts)
 
     var showBottomSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    // 🚨 模块 3：全局未读消息状态监听
+    var hasUnreadAlerts by remember { mutableStateOf(false) }
+    val currentUserId = FirebaseAuth.getInstance().currentUser?.uid
+
+    DisposableEffect(currentUserId) {
+        if (currentUserId == null) return@DisposableEffect onDispose {}
+
+        // 挂载全局监听器，只筛选 receiverId，避免触发 Firebase 复合索引拦截
+        val listener = FirebaseFirestore.getInstance().collection("Notifications")
+            .whereEqualTo("receiverId", currentUserId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) return@addSnapshotListener
+
+                if (snapshot != null) {
+                    // 在本地内存中查找是否存在 isRead == false 的文档
+                    hasUnreadAlerts = snapshot.documents.any { doc ->
+                        doc.getBoolean("isRead") == false
+                    }
+                }
+            }
+        onDispose { listener.remove() }
+    }
 
     Scaffold(
         bottomBar = {
@@ -37,6 +61,17 @@ fun MainScreen(onLogout: () -> Unit = {}) {
                         icon = {
                             if (screen == Screen.AddAction) {
                                 Icon(screen.icon, contentDescription = screen.title, modifier = Modifier.size(36.dp), tint = MaterialTheme.colorScheme.primary)
+                            } else if (screen == Screen.Alerts) {
+                                // 💡 引入 Material 3 的 BadgedBox 显示小红点
+                                BadgedBox(
+                                    badge = {
+                                        if (hasUnreadAlerts) {
+                                            Badge() // 空 Badge 就是一个小红点；如果里面加 Text("1") 就会显示数字
+                                        }
+                                    }
+                                ) {
+                                    Icon(screen.icon, contentDescription = screen.title)
+                                }
                             } else {
                                 Icon(screen.icon, contentDescription = screen.title)
                             }
@@ -47,13 +82,12 @@ fun MainScreen(onLogout: () -> Unit = {}) {
                             if (screen == Screen.AddAction) {
                                 showBottomSheet = true
                             } else {
-                                // 💡 落实 Point 1：强制跳转并清空所有中间页面的状态！
                                 navController.navigate(screen.route) {
                                     popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = false // 👈 绝对不保存状态，保证输入框被清空
+                                        saveState = false
                                     }
                                     launchSingleTop = true
-                                    restoreState = false // 👈 不恢复历史状态，永远展现全新的页面
+                                    restoreState = false
                                 }
                             }
                         }
@@ -64,18 +98,16 @@ fun MainScreen(onLogout: () -> Unit = {}) {
     ) { innerPadding ->
         NavHost(navController, startDestination = Screen.Home.route, Modifier.padding(innerPadding)) {
 
-            // 📍 1. Explore 地图主页
             composable(Screen.Home.route) {
-                // 💡 2. 把跳转到 Profile 的权力交给 HomeScreen
-                HomeScreen(onNavigateToProfile = { navController.navigate(Screen.Profile.route) })
+                HomeScreen(
+                    onNavigateToProfile = { navController.navigate(Screen.Profile.route) },
+                    // 💡 新增：把前往时间线的路书传给 HomeScreen
+                    onNavigateToTimeline = { id ->
+                        navController.navigate(Screen.CaseTimeline.createRoute(id))
+                    }
+                )
             }
 
-            // 📍 2. Alerts 通知页
-            composable(Screen.Alerts.route) {
-                AlertsScreen()
-            }
-
-            // --- 隐藏的子页面 ---
             composable(Screen.Report.route) {
                 ReportScreen(onNavigateBack = { navController.popBackStack() })
             }
@@ -86,12 +118,32 @@ fun MainScreen(onLogout: () -> Unit = {}) {
             composable(Screen.Profile.route) {
                 ProfileScreen(
                     onNavigateBack = { navController.popBackStack() },
-                    onLogout = onLogout // 把退出指令传给 Profile 页面
+                    onLogout = onLogout
+                )
+            }
+            // 📍 2. Alerts 通知页 (修改这一段)
+            composable(Screen.Alerts.route) {
+                AlertsScreen(
+                    onNavigateToTimeline = { id ->
+                        navController.navigate(Screen.CaseTimeline.createRoute(id))
+                    }
+                )
+            }
+
+            // ... 其他隐藏子页面保持原样 ...
+
+            // 📍 3. 新增：案件时间线 (放到 NavHost 里的任何位置即可)
+            composable(Screen.CaseTimeline.route) { backStackEntry ->
+                // 解析传进来的 missingPersonId
+                val missingPersonId = backStackEntry.arguments?.getString("id") ?: ""
+                CaseTimelineScreen(
+                    missingPersonId = missingPersonId,
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
         }
 
-        // 🎨 弹出式底部菜单
+        // --- Bottom Sheet 保留原样 ---
         if (showBottomSheet) {
             ModalBottomSheet(onDismissRequest = { showBottomSheet = false }, sheetState = sheetState) {
                 Column(modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp, start = 16.dp, end = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {

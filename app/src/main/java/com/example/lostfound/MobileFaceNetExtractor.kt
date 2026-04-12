@@ -93,25 +93,26 @@ class MobileFaceNetExtractor(context: Context, modelName: String = "MobileFaceNe
      * 工业级置信度映射逻辑 (Confidence Calibration)
      * 将 ArcFace 压抑的余弦相似度转换为人类易读的百分比置信度
      */
+    /**
+     * 极简置信度映射 (Linear Normalization)
+     * 将机器的余弦相似度，平滑翻译为人类的百分比直觉
+     */
     fun calculateConfidenceScore(cosineSimilarity: Float): Float {
-        // 设定 MobileFaceNet 的理论边界
-        val threshold = 0.40f // AI 认为 0.40 就是及格线 (同一个人)
-        val maxExpected = 0.60f // AI 理论上的最高分大概在 0.60 左右
-        val minExpected = 0.10f // 完全不像的人大概在 0.10 以下
+        // 过滤极其异常的负数结果
+        if (cosineSimilarity < 0f) return 0.05f
 
-        return when {
-            cosineSimilarity >= maxExpected -> 0.99f // 封顶 99%
-            cosineSimilarity >= threshold -> {
-                // 如果在 0.40 ~ 0.60 之间，映射到 80% ~ 98%
-                val mapped = 0.80f + (cosineSimilarity - threshold) / (maxExpected - threshold) * 0.18f
-                mapped
-            }
-            cosineSimilarity > minExpected -> {
-                // 如果在 0.10 ~ 0.40 之间，映射到 20% ~ 79% (路人分数)
-                val mapped = 0.20f + (cosineSimilarity - minExpected) / (threshold - minExpected) * 0.59f
-                mapped
-            }
-            else -> 0.05f // 极低概率
+        // 🚨 设定单一严格及格线
+        // 在 MobileFaceNet 中，0.50 已经是一个非常高的要求了
+        val threshold = 0.50f
+
+        return if (cosineSimilarity >= threshold) {
+            // 及格区间：把 0.50 ~ 1.0 的机器分数，均匀拉伸到 0.80 ~ 0.99 (80% 到 99%)
+            // 这样一来，只要是同一个人，分数看起来就会非常高（90%左右），解决“分数太低”的问题
+            0.80f + ((cosineSimilarity - threshold) / (1.0f - threshold)) * 0.19f
+        } else {
+            // 不及格区间：把 0.0 ~ 0.50 的分数，均匀压缩到 0.0 ~ 0.79 (低于 80%)
+            // 解决“乱认人”的问题，路人脸绝对无法越过 80% 的门槛
+            (cosineSimilarity / threshold) * 0.79f
         }
     }
 

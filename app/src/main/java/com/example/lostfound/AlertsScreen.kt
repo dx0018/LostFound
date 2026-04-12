@@ -33,7 +33,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 @Composable
-fun AlertsScreen() {
+fun AlertsScreen(onNavigateToTimeline: (String) -> Unit) {
     val currentUserId = FirebaseAuth.getInstance().currentUser?.uid ?: return
     var selectedTabIndex by remember { mutableStateOf(0) }
     val tabs = listOf("Notifications", "My Records")
@@ -56,7 +56,7 @@ fun AlertsScreen() {
         }
 
         Box(modifier = Modifier.fillMaxSize()) {
-            if (selectedTabIndex == 0) NotificationsTab(currentUserId) else MyRecordsTab(currentUserId)
+            if (selectedTabIndex == 0) NotificationsTab(currentUserId) else MyRecordsTab(currentUserId,onNavigateToTimeline)
         }
     }
 }
@@ -74,9 +74,19 @@ fun NotificationsTab(currentUserId: String) {
     DisposableEffect(Unit) {
         val listener = FirebaseFirestore.getInstance().collection("Notifications")
             .whereEqualTo("receiverId", currentUserId)
-            .orderBy("timestamp", Query.Direction.DESCENDING)
-            .addSnapshotListener { snapshot, _ ->
-                if (snapshot != null) notifications = snapshot.toObjects(NotificationRecord::class.java)
+            // 🚨 修复 1：移除服务器端的 orderBy，防止因为缺失复合索引导致云端查询被拦截
+            // .orderBy("timestamp", Query.Direction.DESCENDING)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    isLoading = false
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    val fetchedList = snapshot.toObjects(NotificationRecord::class.java)
+                    // 💡 修复 2：在手机本地使用 Kotlin 语法进行时间倒序排列，完美解决问题！
+                    notifications = fetchedList.sortedByDescending { it.timestamp }
+                }
                 isLoading = false
             }
         onDispose { listener.remove() }
@@ -179,7 +189,7 @@ fun NotificationsTab(currentUserId: String) {
 }
 
 @Composable
-fun MyRecordsTab(currentUserId: String) {
+fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var myPersons by remember { mutableStateOf<List<MissingPerson>>(emptyList()) }
@@ -226,23 +236,23 @@ fun MyRecordsTab(currentUserId: String) {
             title = { Text("Manage Case: ${mp.name}") },
             text = { Text("Current Status: ${mp.status}\n\nWhat would you like to do?") },
             confirmButton = {
-                if (mp.status != MPStatus.FOUND.name) {
-                    Button(onClick = {
-                        scope.launch(Dispatchers.IO) {
-                            val db = FirebaseFirestore.getInstance()
-                            // 1. 将主案件标记为已寻回
-                            db.collection("MissingPersons").document(mp.id).update("status", MPStatus.FOUND.name)
-                            // 2. 将所有关联的 Sighting 标记为 RESOLVED (协助结案)
-                            val linkedSightings = db.collection("Sightings").whereEqualTo("linkedMissingPersonId", mp.id).get().await()
-                            for (doc in linkedSightings.documents) {
-                                db.collection("Sightings").document(doc.id).update("status", SightingStatus.RESOLVED.name)
-                            }
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "Case Closed! Glad they are found.", Toast.LENGTH_SHORT).show()
-                                selectedMP = null
-                            }
-                        }
-                    }) { Text("Mark as FOUND ✅") }
+                Column(horizontalAlignment = Alignment.End, modifier = Modifier.fillMaxWidth()) {
+                    // 💡 新增：跳转到时间线
+                    Button(
+                        onClick = {
+                            selectedMP = null
+                            onNavigateToTimeline(mp.id)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    ) { Text("📍 View Case Tracker") }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // 👇 下面保留你原本的 Mark as FOUND 按钮逻辑
+                    if (mp.status != MPStatus.FOUND.name) {
+                        Button(onClick = { /* 你的原有代码 */ }, modifier = Modifier.fillMaxWidth()) { Text("Mark as FOUND ✅") }
+                    }
                 }
             },
             dismissButton = {

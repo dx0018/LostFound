@@ -41,7 +41,6 @@ import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-// 🏆 架构解耦：不再接收 NavController，只接收一个无参数无返回值的 Lambda 回调函数
 fun ReportScreen(onNavigateBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -153,17 +152,28 @@ fun ReportScreen(onNavigateBack: () -> Unit) {
                         val scaleRatio = 400f / selectedBitmap!!.width
                         val scaledBitmap = Bitmap.createScaledBitmap(selectedBitmap!!, 400, (selectedBitmap!!.height * scaleRatio).toInt(), true)
                         val baos = ByteArrayOutputStream()
-                        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
+
+                        // 💡 修复 1：降低压缩率至 50，防止因家属上传原图导致 Firestore 1MB Payload OOM 崩溃
+                        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos)
                         val base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT)
 
                         val db = FirebaseFirestore.getInstance()
                         withContext(Dispatchers.Main) { progressText = "💾 Saving to Missing Persons DB..." }
 
                         val currentUserId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
-                        val personData = MissingPerson(ownerId = currentUserId, name = name, age = age, gender = gender, height = height, weight = weight, lastSeenLocation = location, contactPhone = contact, photoBase64 = base64Image, embedding = embeddingList, status = MPStatus.ACTIVE.name)
-                        val docRef = db.collection("MissingPersons").add(personData).await()
-                        currentMissingPersonId = docRef.id
-                        db.collection("MissingPersons").document(currentMissingPersonId).update("id", currentMissingPersonId).await()
+
+                        // 💡 修复 2：原子化生成 ID 并单次保存，取代之前容易产生脏数据的双重写入
+                        val newMpRef = db.collection("MissingPersons").document()
+                        currentMissingPersonId = newMpRef.id
+
+                        val personData = MissingPerson(
+                            id = currentMissingPersonId,
+                            ownerId = currentUserId,
+                            name = name, age = age, gender = gender, height = height, weight = weight,
+                            lastSeenLocation = location, contactPhone = contact, photoBase64 = base64Image,
+                            embedding = embeddingList, status = MPStatus.ACTIVE.name
+                        )
+                        newMpRef.set(personData).await()
 
                         withContext(Dispatchers.Main) { progressText = "🔍 Searching historical sightings..." }
                         val pendingSightings = db.collection("Sightings").whereEqualTo("status", SightingStatus.PENDING.name).get().await().toObjects(SightingRecord::class.java)
@@ -173,6 +183,7 @@ fun ReportScreen(onNavigateBack: () -> Unit) {
                             if (sighting.embedding.isNotEmpty()) {
                                 val sim = extractor.calculateSimilarity(sighting.embedding.map { it.toFloat() }.toFloatArray(), embeddingList.map{ it.toFloat() }.toFloatArray())
                                 val conf = extractor.calculateConfidenceScore(sim)
+                                // 💡 配合新的严谨置信度算法，这里只需 > 0.80f 即可放行
                                 if (conf > 0.80f) {
                                     sighting.aiConfidenceScore = (conf * 100).roundToInt()
                                     foundMatches.add(sighting)
@@ -188,7 +199,6 @@ fun ReportScreen(onNavigateBack: () -> Unit) {
                                 showMatchDialog = true
                             } else {
                                 Toast.makeText(context, "✅ Report Published Successfully!", Toast.LENGTH_LONG).show()
-                                // 💡 解耦调用：通过对讲机喊总指挥退回主页
                                 onNavigateBack()
                             }
                         }
@@ -224,7 +234,6 @@ fun ReportScreen(onNavigateBack: () -> Unit) {
                         OutlinedButton(onClick = {
                             showMatchDialog = false
                             Toast.makeText(context, "Report Published. (Match ignored)", Toast.LENGTH_SHORT).show()
-                            // 💡 解耦调用：通过对讲机喊总指挥退回主页
                             onNavigateBack()
                         }, modifier = Modifier.weight(1f)) { Text("No") }
 
@@ -236,15 +245,29 @@ fun ReportScreen(onNavigateBack: () -> Unit) {
                                     val mpRef = db.collection("MissingPersons").document(currentMissingPersonId)
                                     val sgRef = db.collection("Sightings").document(topMatch.id)
                                     val currentLinked = (transaction.get(mpRef).get("linkedSightingIds") as? List<String>) ?: emptyList()
+
                                     transaction.update(mpRef, "status", MPStatus.PENDING_VERIFICATION.name)
                                     transaction.update(mpRef, "linkedSightingIds", currentLinked + topMatch.id)
                                     transaction.update(sgRef, "status", SightingStatus.LINKED.name)
                                     transaction.update(sgRef, "linkedMissingPersonId", currentMissingPersonId)
+
+                                    // 💡 修复 3：构建闭环！家属确认匹配孤立线索后，立刻派发感谢信给当初的好心人
+                                    val thanksRef = db.collection("Notifications").document()
+                                    val currentUserId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
+                                    val thankYouNote = NotificationRecord(
+                                        id = thanksRef.id,
+                                        receiverId = topMatch.ownerId, // 接收者：当年上传孤立线索的路人
+                                        senderId = currentUserId,      // 发送者：当前家属
+                                        title = "🙏 Clue Confirmed!",
+                                        message = "A family just matched your orphan sighting to their missing report. Thank you for your help!",
+                                        type = "THANK_YOU"
+                                    )
+                                    transaction.set(thanksRef, thankYouNote)
+
                                 }.await()
                                 withContext(Dispatchers.Main) {
                                     showMatchDialog = false
-                                    Toast.makeText(context, "✅ Successfully linked! Status updated.", Toast.LENGTH_LONG).show()
-                                    // 💡 解耦调用：通过对讲机喊总指挥退回主页
+                                    Toast.makeText(context, "✅ Successfully linked & Samaritan notified!", Toast.LENGTH_LONG).show()
                                     onNavigateBack()
                                 }
                             }
