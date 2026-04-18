@@ -30,7 +30,6 @@ enum class SightingStatus {
  */
 data class MissingPerson(
     var id: String = "",
-    // 发布者信息 (未来关联 Chat/Notification 用)
     val ownerId: String = "",
 
     // 基础资料
@@ -40,7 +39,13 @@ data class MissingPerson(
     val height: String = "",
     val weight: String = "",
     val clothingDescription: String = "",
+    
+    // 🚨 升级：增加精准日期和精准地图坐标
+    val lastSeenDate: String = "",
     val lastSeenLocation: String = "",
+    val locationLat: Double? = null,
+    val locationLng: Double? = null,
+    
     val contactPhone: String = "",
 
     // 核心 AI 与媒体
@@ -60,13 +65,16 @@ data class MissingPerson(
  */
 data class SightingRecord(
     var id: String = "",
-    // 发布者信息
     val ownerId: String = "",
 
-    // 目击情报 (全部为非必填的模糊描述)
-    val location: String = "",          // 比如 "Near UTM Skudai" (后续接入 GPS)
-    val estimatedFeatures: String = "", // 比如 "大概 160cm，很瘦"
-    val clothingAppearance: String = "",// 比如 "红色帽子"
+    // 目击情报
+    val sightingDate: String = "", // 🚨 升级：目击日期
+    val location: String = "",
+    val locationLat: Double? = null, // 🚨 升级：精准坐标
+    val locationLng: Double? = null,
+    
+    val estimatedFeatures: String = "", 
+    val clothingAppearance: String = "",
 
     // 核心 AI 与媒体
     val photoBase64: String = "",
@@ -79,22 +87,21 @@ data class SightingRecord(
     // 🔗 核心逻辑：如果被认领，记录属于哪个主案件；如果未认领，此项为空
     var linkedMissingPersonId: String? = null,
 
-    // AI 初步评估的相似度 (辅助家属判断)
+    // AI 初步评估的相似度
     var aiConfidenceScore: Int = 0
 )
 
-// 💡 通知消息的数据模型
 data class NotificationRecord(
     val id: String = "",
-    val receiverId: String = "", // 接收者 UID（比如家属）
-    val senderId: String = "", // 发送者 UID（拍到照片的路人）
-    val title: String = "", // 标题，比如 "Potential Match Found!"
-    val message: String = "", // 详细内容，包含位置和时间
-    val photoBase64: String = "", // 附带路人拍的照片，方便家属立刻确认
-    val relatedSightingId: String = "", // 关联的线索 ID
-    val relatedMissingPersonId: String = "", // 关联的失踪者 ID
-    val type: String = "SIGHTING_MATCH", // 通知类型
-    val isRead: Boolean = false, // 是否已读
+    val receiverId: String = "", 
+    val senderId: String = "", 
+    val title: String = "", 
+    val message: String = "", 
+    val photoBase64: String = "", 
+    val relatedSightingId: String = "", 
+    val relatedMissingPersonId: String = "", 
+    val type: String = "SIGHTING_MATCH", 
+    val isRead: Boolean = false, 
     val timestamp: Long = System.currentTimeMillis()
 )
 

@@ -25,8 +25,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -74,8 +74,6 @@ fun NotificationsTab(currentUserId: String) {
     DisposableEffect(Unit) {
         val listener = FirebaseFirestore.getInstance().collection("Notifications")
             .whereEqualTo("receiverId", currentUserId)
-            // 🚨 修复 1：移除服务器端的 orderBy，防止因为缺失复合索引导致云端查询被拦截
-            // .orderBy("timestamp", Query.Direction.DESCENDING)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     isLoading = false
@@ -84,7 +82,6 @@ fun NotificationsTab(currentUserId: String) {
 
                 if (snapshot != null) {
                     val fetchedList = snapshot.toObjects(NotificationRecord::class.java)
-                    // 💡 修复 2：在手机本地使用 Kotlin 语法进行时间倒序排列，完美解决问题！
                     notifications = fetchedList.sortedByDescending { it.timestamp }
                 }
                 isLoading = false
@@ -101,7 +98,7 @@ fun NotificationsTab(currentUserId: String) {
             items(notifications) { note ->
                 NotificationCard(note) {
                     selectedNote = note
-                    // 点击后自动标记为已读
+                    // 点击后自动标记为已读 (通知界面的红点就会消失)
                     if (!note.isRead) {
                         FirebaseFirestore.getInstance().collection("Notifications").document(note.id).update("isRead", true)
                     }
@@ -110,11 +107,9 @@ fun NotificationsTab(currentUserId: String) {
         }
     }
 
-    // 💡 核心修复：根据通知的 type 弹出不同的对话框！
     selectedNote?.let { note ->
         when (note.type) {
             "SIGHTING_MATCH" -> {
-                // 只有全新的匹配通知，才会显示 Yes / No
                 AlertDialog(
                     onDismissRequest = { selectedNote = null },
                     title = { Text("Verify Sighting") },
@@ -125,6 +120,15 @@ fun NotificationsTab(currentUserId: String) {
                                 val db = FirebaseFirestore.getInstance()
                                 // 1. 线索状态改为 LINKED
                                 db.collection("Sightings").document(note.relatedSightingId).update("status", SightingStatus.LINKED.name)
+                                
+                                // 🚨 补充逻辑漏洞：不仅要改线索状态，还需要将该线索 ID 写入主案件的 linkedSightingIds 中，同时更新主案件状态
+                                if (note.relatedMissingPersonId.isNotEmpty()) {
+                                    db.collection("MissingPersons").document(note.relatedMissingPersonId).update(
+                                        "status", MPStatus.PENDING_VERIFICATION.name,
+                                        "linkedSightingIds", FieldValue.arrayUnion(note.relatedSightingId)
+                                    )
+                                }
+
                                 // 2. 发送感谢信给路人
                                 val thanksRef = db.collection("Notifications").document()
                                 thanksRef.set(NotificationRecord(
@@ -132,7 +136,7 @@ fun NotificationsTab(currentUserId: String) {
                                     title = "🙏 Thank You!", message = "The family has confirmed your sighting. Thank you for your help!",
                                     type = "THANK_YOU"
                                 ))
-                                // 3. 🚨 斩断权限：把这条通知改为“已确认”，以后点它就不会再有 Yes/No！
+                                // 3. 斩断权限
                                 db.collection("Notifications").document(note.id).update("type", "MATCH_CONFIRMED")
 
                                 withContext(Dispatchers.Main) {
@@ -148,7 +152,7 @@ fun NotificationsTab(currentUserId: String) {
                                 val db = FirebaseFirestore.getInstance()
                                 // 线索标为无效
                                 db.collection("Sightings").document(note.relatedSightingId).update("status", SightingStatus.REJECTED.name)
-                                // 🚨 斩断权限：把这条通知改为“已拒绝”
+                                // 斩断权限
                                 db.collection("Notifications").document(note.id).update("type", "MATCH_REJECTED")
 
                                 withContext(Dispatchers.Main) { selectedNote = null }
@@ -158,7 +162,6 @@ fun NotificationsTab(currentUserId: String) {
                 )
             }
             "MATCH_CONFIRMED" -> {
-                // 如果家属以前点过 Yes，现在再点这条通知，只显示提示
                 AlertDialog(
                     onDismissRequest = { selectedNote = null },
                     title = { Text("Already Verified ✅") },
@@ -167,7 +170,6 @@ fun NotificationsTab(currentUserId: String) {
                 )
             }
             "MATCH_REJECTED" -> {
-                // 如果家属以前点过 No
                 AlertDialog(
                     onDismissRequest = { selectedNote = null },
                     title = { Text("Already Rejected ❌") },
@@ -176,7 +178,6 @@ fun NotificationsTab(currentUserId: String) {
                 )
             }
             else -> {
-                // 💡 处理 THANK_YOU 或者其他任何普通的文字通知 (只有一个纯关闭按钮)
                 AlertDialog(
                     onDismissRequest = { selectedNote = null },
                     title = { Text(note.title) },
@@ -196,13 +197,11 @@ fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) 
     var mySightings by remember { mutableStateOf<List<SightingRecord>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 
-    // 弹窗状态
     var selectedMP by remember { mutableStateOf<MissingPerson?>(null) }
     var selectedSighting by remember { mutableStateOf<SightingRecord?>(null) }
 
     LaunchedEffect(Unit) {
         val db = FirebaseFirestore.getInstance()
-        // 实时监听我的记录，以便状态更改时界面立刻刷新
         db.collection("MissingPersons").whereEqualTo("ownerId", currentUserId)
             .addSnapshotListener { snap, _ -> if (snap != null) myPersons = snap.toObjects(MissingPerson::class.java) }
         db.collection("Sightings").whereEqualTo("ownerId", currentUserId)
@@ -229,7 +228,6 @@ fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) 
         }
     }
 
-    // 💡 主案件管理弹窗 (最高权限控制)
     selectedMP?.let { mp ->
         AlertDialog(
             onDismissRequest = { selectedMP = null },
@@ -237,7 +235,6 @@ fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) 
             text = { Text("Current Status: ${mp.status}\n\nWhat would you like to do?") },
             confirmButton = {
                 Column(horizontalAlignment = Alignment.End, modifier = Modifier.fillMaxWidth()) {
-                    // 💡 新增：跳转到时间线
                     Button(
                         onClick = {
                             selectedMP = null
@@ -249,9 +246,12 @@ fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) 
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // 👇 下面保留你原本的 Mark as FOUND 按钮逻辑
-                    if (mp.status != MPStatus.FOUND.name) {
-                        Button(onClick = { /* 你的原有代码 */ }, modifier = Modifier.fillMaxWidth()) { Text("Mark as FOUND ✅") }
+                    if (mp.status != MPStatus.FOUND.name && mp.status != MPStatus.CANCELLED.name) {
+                        Button(onClick = {
+                            // 💡 补充逻辑漏洞：原代码这里是空的。现在补充将主案件标记为 "FOUND" (已结案) 的操作
+                            FirebaseFirestore.getInstance().collection("MissingPersons").document(mp.id).update("status", MPStatus.FOUND.name)
+                            selectedMP = null
+                        }, modifier = Modifier.fillMaxWidth()) { Text("Mark as FOUND ✅") }
                     }
                 }
             },
@@ -266,7 +266,6 @@ fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) 
         )
     }
 
-    // 💡 Sighting 管理弹窗 (路人权限控制)
     selectedSighting?.let { sighting ->
         AlertDialog(
             onDismissRequest = { selectedSighting = null },
@@ -280,7 +279,6 @@ fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) 
                 Button(onClick = { selectedSighting = null }) { Text("Close") }
             },
             dismissButton = {
-                // 只有在 PENDING 状态下，路人才可以主动撤回
                 if (sighting.status == SightingStatus.PENDING.name) {
                     OutlinedButton(onClick = {
                         FirebaseFirestore.getInstance().collection("Sightings").document(sighting.id).update("status", SightingStatus.REJECTED.name)
@@ -310,6 +308,7 @@ fun NotificationCard(note: NotificationRecord, onClick: () -> Unit) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(note.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            // 💡 点击后 note.isRead 会被改为 true，这里的红色圆点会消失
             if (!note.isRead) Box(modifier = Modifier.size(10.dp).clip(RoundedCornerShape(50)).background(Color.Red))
         }
     }

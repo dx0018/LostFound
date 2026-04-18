@@ -1,14 +1,20 @@
 package com.example.lostfound
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -16,43 +22,78 @@ import com.example.lostfound.ui.theme.LostFoundTheme
 import com.google.firebase.auth.FirebaseAuth
 
 class MainActivity : ComponentActivity() {
+
+    // 🚨 申请 Android 13+ 通知权限
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            // Permission granted, start listening
+            SystemNotificationUtils.startListeningForNotifications(this)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 1. 初始化系统通知渠道 (Android 8.0+)
+        SystemNotificationUtils.createNotificationChannel(this)
+
+        // 2. 检查权限并启动通知监听器
+        askNotificationPermission()
+
         setContent {
             LostFoundTheme {
-                // A surface container using the 'background' color from the theme
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    // 👈 启动全局总开关
-                    RootNavigation()
+                    RootNavigation(onLoginSuccess = {
+                        // 登录成功后重新启动监听（防止之前没监听）
+                        SystemNotificationUtils.startListeningForNotifications(this)
+                    })
                 }
             }
         }
     }
+
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                SystemNotificationUtils.startListeningForNotifications(this)
+            } else {
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } else {
+            SystemNotificationUtils.startListeningForNotifications(this)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // 可选：如果不希望后台监听，可以 stop。但为了满足你的"后台通知"需求，我们可以让它继续存活一段时间
+        // SystemNotificationUtils.stopListening()
+    }
 }
 
 @Composable
-fun RootNavigation() {
+fun RootNavigation(onLoginSuccess: () -> Unit = {}) {
     val rootNavController = rememberNavController()
-    // 获取 Firebase 的身份验证实例
     val auth = remember { FirebaseAuth.getInstance() }
 
-    // 💡 核心神仙逻辑：系统自动判断当前是否有记住的用户
-    // 如果 currentUser 不是 null，说明以前登录过，直接跳去主页 "main"
-    // 如果是 null，说明是第一次来或者退出了，去登录页 "login"
-    val startDestination = if (auth.currentUser != null) "main" else "login"
+    val startDestination = if (auth.currentUser != null) {
+        onLoginSuccess() // 启动时已登录，直接监听
+        "main"
+    } else "login"
 
-    // 这是 App 最外层的大路由
     NavHost(navController = rootNavController, startDestination = startDestination) {
 
-        // 1. 登录页
         composable("login") {
             LoginScreen(navController = rootNavController)
         }
 
-        // 2. 注册页
         composable("register") {
             RegisterScreen(navController = rootNavController)
         }
@@ -61,18 +102,16 @@ fun RootNavigation() {
             SetupProfileScreen(navController = rootNavController)
         }
 
-        // 3. 我们之前写好的主架构
         composable("main") {
             MainScreen(
                 onLogout = {
-                    auth.signOut() // 1. 让 Firebase 退出登录
-                    rootNavController.navigate("login") { // 2. 跳回登录页
-                        popUpTo(0) { inclusive = true } // 3. 彻底清空所有历史页面（防止按返回键又回到主页）
+                    auth.signOut() 
+                    SystemNotificationUtils.stopListening() // 退出登录时停止监听
+                    rootNavController.navigate("login") { 
+                        popUpTo(0) { inclusive = true } 
                     }
                 }
             )
         }
-
-
     }
 }
