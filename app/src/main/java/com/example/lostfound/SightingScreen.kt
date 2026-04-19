@@ -64,32 +64,38 @@ data class FaceScanResult(
 @Composable
 fun SightingScreen(onNavigateBack: () -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val scope   = rememberCoroutineScope()
 
     var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var resultBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var isProcessing by remember { mutableStateOf(false) }
-    var isUploading by remember { mutableStateOf(false) }
-    var statusText by remember { mutableStateOf("Select a photo or take a picture to scan") }
-    var scanResults by remember { mutableStateOf<List<FaceScanResult>>(emptyList()) }
+    var resultBitmap   by remember { mutableStateOf<Bitmap?>(null) }
+    var isProcessing   by remember { mutableStateOf(false) }
+    var isUploading    by remember { mutableStateOf(false) }
+    var statusText     by remember { mutableStateOf("Select a photo or take a picture to scan") }
+    var scanResults    by remember { mutableStateOf<List<FaceScanResult>>(emptyList()) }
 
     var hasAutoUploaded by remember { mutableStateOf(false) }
 
     var sightingLocation by remember { mutableStateOf("") }
-    var locationLat by remember { mutableStateOf<Double?>(null) }
-    var locationLng by remember { mutableStateOf<Double?>(null) }
-    var sightingDate by remember { mutableStateOf("") }
+    var locationLat      by remember { mutableStateOf<Double?>(null) }
+    var locationLng      by remember { mutableStateOf<Double?>(null) }
+    var sightingDate     by remember { mutableStateOf("") }
 
-    var estimatedFeatures by remember { mutableStateOf("") }
+    var estimatedFeatures  by remember { mutableStateOf("") }
     var clothingAppearance by remember { mutableStateOf("") }
 
     var showDatePicker by remember { mutableStateOf(false) }
-    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = System.currentTimeMillis())
+    val datePickerState = rememberDatePickerState(
+        initialSelectedDateMillis = System.currentTimeMillis()
+    )
     var showMapPicker by remember { mutableStateOf(false) }
 
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
-    val locationPermissionRequest = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-        if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true) {
+    val locationPermissionRequest = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            permissions[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        ) {
             Toast.makeText(context, "Fetching real GPS location...", Toast.LENGTH_SHORT).show()
             try {
                 fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
@@ -101,57 +107,88 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                 geocoder.getFromLocation(loc.latitude, loc.longitude, 1) { addresses ->
                                     val address = addresses.firstOrNull()?.getAddressLine(0)
-                                    sightingLocation = address ?: "${loc.latitude}, ${loc.longitude}"
+                                    sightingLocation = address ?: ", "
                                 }
                             } else {
                                 @Suppress("DEPRECATION")
                                 val addresses = geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
-                                sightingLocation = addresses?.firstOrNull()?.getAddressLine(0) ?: "${loc.latitude}, ${loc.longitude}"
+                                sightingLocation = addresses?.firstOrNull()?.getAddressLine(0) ?: ", "
                             }
                         } catch (e: Exception) {
-                            sightingLocation = "${loc.latitude}, ${loc.longitude}"
+                            sightingLocation = ", "
                         }
                     } else {
                         Toast.makeText(context, "GPS is off or fetching failed.", Toast.LENGTH_SHORT).show()
                     }
                 }
-            } catch (e: SecurityException) { e.printStackTrace() }
+            } catch (e: SecurityException) {
+                e.printStackTrace()
+            }
         } else {
             Toast.makeText(context, "Location permission denied", Toast.LENGTH_SHORT).show()
         }
     }
 
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap: Bitmap? ->
-        if (bitmap != null) { selectedBitmap = bitmap; resultBitmap = null; scanResults = emptyList(); statusText = "Image loaded."; hasAutoUploaded = false }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: Bitmap? ->
+        if (bitmap != null) {
+            selectedBitmap  = bitmap
+            resultBitmap    = null
+            scanResults     = emptyList()
+            statusText      = "Image loaded."
+            hasAutoUploaded = false
+        }
     }
 
-    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    val galleryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch(Dispatchers.IO) {
             try {
                 val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ -> decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE; decoder.isMutableRequired = true }
+                    ImageDecoder.decodeBitmap(
+                        ImageDecoder.createSource(context.contentResolver, uri)
+                    ) { decoder, _, _ ->
+                        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                        decoder.isMutableRequired = true
+                    }
                 } else {
-                    @Suppress("DEPRECATION") MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
+                    @Suppress("DEPRECATION")
+                    MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
                 }
-                withContext(Dispatchers.Main) { selectedBitmap = bitmap; resultBitmap = null; scanResults = emptyList(); statusText = "Image loaded."; hasAutoUploaded = false }
+                withContext(Dispatchers.Main) {
+                    selectedBitmap  = bitmap
+                    resultBitmap    = null
+                    scanResults     = emptyList()
+                    statusText      = "Image loaded."
+                    hasAutoUploaded = false
+                }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Image load failed", Toast.LENGTH_SHORT).show() }
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Image load failed", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
 
+    // ----------------------------------------------------------------
+    // Auto-upload when a match is found.
+    // Re-runs whenever scanResults is replaced with a new list reference,
+    // which is how the Retry button triggers a retry.
+    // ----------------------------------------------------------------
     LaunchedEffect(scanResults) {
         val matchResult = scanResults.firstOrNull { it.isMatch && it.matchedPerson != null }
         if (matchResult != null && !hasAutoUploaded && selectedBitmap != null) {
             hasAutoUploaded = true
-            isUploading = true
-            
+            isUploading     = true
+
             withContext(Dispatchers.Default) {
                 try {
                     val maxDim = maxOf(selectedBitmap!!.width, selectedBitmap!!.height)
                     val scaleRatio = if (maxDim > 400) 400f / maxDim else 1.0f
-                    val targetWidth = (selectedBitmap!!.width * scaleRatio).toInt()
+                    val targetWidth  = (selectedBitmap!!.width  * scaleRatio).toInt()
                     val targetHeight = (selectedBitmap!!.height * scaleRatio).toInt()
                     val scaledBitmap = if (scaleRatio < 1.0f) {
                         Bitmap.createScaledBitmap(selectedBitmap!!, targetWidth, targetHeight, true)
@@ -165,39 +202,39 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
                     }
                     val base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT)
 
-                    val db = FirebaseFirestore.getInstance()
-                    val currentUserId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
-                    val batch = db.batch()
+                    val db             = FirebaseFirestore.getInstance()
+                    val currentUserId  = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
+                    val batch          = db.batch()
 
                     val newSightingRef = db.collection("Sightings").document()
-                    val matchedMP = matchResult.matchedPerson!!
+                    val matchedMP      = matchResult.matchedPerson!!
 
                     val sightingData = SightingRecord(
-                        id = newSightingRef.id,
-                        ownerId = currentUserId,
-                        sightingDate = sightingDate,
-                        location = sightingLocation.ifBlank { "Location not provided" },
-                        locationLat = locationLat,
-                        locationLng = locationLng,
-                        estimatedFeatures = estimatedFeatures,
-                        clothingAppearance = clothingAppearance,
-                        photoBase64 = base64Image,
-                        embedding = matchResult.faceFeature,
-                        status = SightingStatus.LINKED.name,
+                        id                    = newSightingRef.id,
+                        ownerId               = currentUserId,
+                        sightingDate          = sightingDate,
+                        location              = sightingLocation.ifBlank { "Location not provided" },
+                        locationLat           = locationLat,
+                        locationLng           = locationLng,
+                        estimatedFeatures     = estimatedFeatures,
+                        clothingAppearance    = clothingAppearance,
+                        photoBase64           = base64Image,
+                        embedding             = matchResult.faceFeature,
+                        status                = SightingStatus.LINKED.name,
                         linkedMissingPersonId = matchedMP.id,
-                        aiConfidenceScore = matchResult.confidence
+                        aiConfidenceScore     = matchResult.confidence
                     )
                     batch.set(newSightingRef, sightingData)
 
                     val notificationRef = db.collection("Notifications").document()
                     val notification = NotificationRecord(
-                        id = notificationRef.id,
-                        receiverId = matchedMP.ownerId,
-                        senderId = currentUserId,
-                        title = "🚨 Potential Match Found!",
-                        message = "Someone reported seeing a person matching your profile at ${sightingData.location}.",
-                        photoBase64 = base64Image,
-                        relatedSightingId = sightingData.id,
+                        id                     = notificationRef.id,
+                        receiverId             = matchedMP.ownerId,
+                        senderId               = currentUserId,
+                        title                  = "🚨 Potential Match Found!",
+                        message                = "Someone reported seeing a person matching your profile at .",
+                        photoBase64            = base64Image,
+                        relatedSightingId      = sightingData.id,
                         relatedMissingPersonId = matchedMP.id
                     )
                     batch.set(notificationRef, notification)
@@ -210,21 +247,31 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
 
                     withContext(Dispatchers.Main) {
                         isUploading = false
-                        Toast.makeText(context, "✅ Match detected! Tip auto-sent to family.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(
+                            context,
+                            "✅ Match detected! Tip auto-sent to family.",
+                            Toast.LENGTH_LONG
+                        ).show()
                         onNavigateBack()
                     }
-
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
-                        isUploading = false
-                        hasAutoUploaded = false 
-                        Toast.makeText(context, "Auto-upload failed: ${e.message}", Toast.LENGTH_LONG).show()
+                        isUploading     = false
+                        hasAutoUploaded = false
+                        // Explicit guidance: user knows a retry button is available below.
+                        Toast.makeText(
+                            context,
+                            "Auto-upload failed: . " +
+                                    "Use the Retry button below to try again.",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
             }
         }
     }
 
+    // ---- Date picker dialog ----
     if (showDatePicker) {
         DatePickerDialog(
             onDismissRequest = { showDatePicker = false },
@@ -243,12 +290,13 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
         ) { DatePicker(state = datePickerState) }
     }
 
+    // ---- Map picker dialog ----
     if (showMapPicker) {
         MapLocationPickerDialog(context, onDismiss = { showMapPicker = false }) { latLng: LatLng, addr: String ->
-            locationLat = latLng.latitude
-            locationLng = latLng.longitude
+            locationLat      = latLng.latitude
+            locationLng      = latLng.longitude
             sightingLocation = addr
-            showMapPicker = false
+            showMapPicker    = false
         }
     }
 
@@ -257,7 +305,9 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
             TopAppBar(
                 title = { Text("Report a Sighting", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
                 },
                 windowInsets = WindowInsets(top = 8.dp)
             )
@@ -273,233 +323,519 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
         ) {
             Spacer(modifier = Modifier.height(8.dp))
 
-            Box(modifier = Modifier.fillMaxWidth().height(280.dp).clip(RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
+            // ---- Image preview ----
+            Box(
+                modifier         = Modifier
+                    .fillMaxWidth()
+                    .height(280.dp)
+                    .clip(RoundedCornerShape(16.dp)),
+                contentAlignment = Alignment.Center
+            ) {
                 val displayBitmap = resultBitmap ?: selectedBitmap
                 if (displayBitmap != null) {
-                    Image(bitmap = displayBitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    Image(
+                        bitmap             = displayBitmap.asImageBitmap(),
+                        contentDescription = null,
+                        modifier           = Modifier.fillMaxSize(),
+                        contentScale       = ContentScale.Crop
+                    )
                 } else {
-                    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceVariant) { 
-                        Box(contentAlignment = Alignment.Center) { Text("No Image Selected") } 
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color    = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Box(contentAlignment = Alignment.Center) { Text("No Image Selected") }
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                OutlinedButton(onClick = { galleryLauncher.launch("image/*") }, modifier = Modifier.weight(1f), enabled = !isProcessing && !isUploading) { Text("🖼️ Gallery") }
+
+            // ---- Image source buttons ----
+            Row(
+                modifier            = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                OutlinedButton(
+                    onClick  = { galleryLauncher.launch("image/*") },
+                    modifier = Modifier.weight(1f),
+                    enabled  = !isProcessing && !isUploading
+                ) { Text("🖼️ Gallery") }
                 Spacer(modifier = Modifier.width(8.dp))
-                OutlinedButton(onClick = { cameraLauncher.launch(null) }, modifier = Modifier.weight(1f), enabled = !isProcessing && !isUploading) { Text("📸 Camera") }
+                OutlinedButton(
+                    onClick  = { cameraLauncher.launch(null) },
+                    modifier = Modifier.weight(1f),
+                    enabled  = !isProcessing && !isUploading
+                ) { Text("📸 Camera") }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))) {
+            // ---- Context details card ----
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors   = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                )
+            ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Context Details (Optional)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        "Context Details (Optional)",
+                        fontWeight = FontWeight.Bold,
+                        style      = MaterialTheme.typography.titleMedium,
+                        color      = MaterialTheme.colorScheme.primary
+                    )
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Box(modifier = Modifier.fillMaxWidth().clickable { showDatePicker = true }) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showDatePicker = true }
+                    ) {
                         OutlinedTextField(
-                            value = sightingDate, onValueChange = {}, readOnly = true, enabled = false,
-                            label = { Text("Date of Sighting") },
-                            trailingIcon = { Icon(Icons.Default.CalendarToday, null) },
-                            modifier = Modifier.fillMaxWidth(),
+                            value         = sightingDate,
+                            onValueChange = {},
+                            readOnly      = true,
+                            enabled       = false,
+                            label         = { Text("Date of Sighting") },
+                            trailingIcon  = { Icon(Icons.Default.CalendarToday, null) },
+                            modifier      = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
-                                disabledTextColor = MaterialTheme.colorScheme.onSurface,
-                                disabledBorderColor = MaterialTheme.colorScheme.outline,
-                                disabledLeadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                disabledTextColor         = MaterialTheme.colorScheme.onSurface,
+                                disabledBorderColor       = MaterialTheme.colorScheme.outline,
+                                disabledLeadingIconColor  = MaterialTheme.colorScheme.onSurfaceVariant,
                                 disabledTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                disabledLabelColor        = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         )
                     }
                     Spacer(modifier = Modifier.height(8.dp))
 
                     OutlinedTextField(
-                        value = sightingLocation, onValueChange = { sightingLocation = it },
-                        label = { Text("Location of Sighting") },
-                        trailingIcon = {
+                        value         = sightingLocation,
+                        onValueChange = { sightingLocation = it },
+                        label         = { Text("Location of Sighting") },
+                        trailingIcon  = {
                             Row {
-                                IconButton(onClick = { locationPermissionRequest.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION)) }) {
-                                    Icon(Icons.Default.MyLocation, "Current Location", tint = MaterialTheme.colorScheme.primary)
+                                IconButton(onClick = {
+                                    locationPermissionRequest.launch(
+                                        arrayOf(
+                                            android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                            android.Manifest.permission.ACCESS_COARSE_LOCATION
+                                        )
+                                    )
+                                }) {
+                                    Icon(
+                                        Icons.Default.MyLocation,
+                                        "Current Location",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
                                 }
                                 IconButton(onClick = { showMapPicker = true }) {
-                                    Icon(Icons.Default.Map, "Select on Map", tint = MaterialTheme.colorScheme.primary)
+                                    Icon(
+                                        Icons.Default.Map,
+                                        "Select on Map",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
                                 }
                             }
                         },
-                        modifier = Modifier.fillMaxWidth(), maxLines = 2
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 2
                     )
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(value = estimatedFeatures, onValueChange = { estimatedFeatures = it }, label = { Text("Est. Height/Age") }, modifier = Modifier.weight(1f), singleLine = true)
-                        OutlinedTextField(value = clothingAppearance, onValueChange = { clothingAppearance = it }, label = { Text("Clothing") }, modifier = Modifier.weight(1f), singleLine = true)
+                    Row(
+                        modifier              = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value         = estimatedFeatures,
+                            onValueChange = { estimatedFeatures = it },
+                            label         = { Text("Est. Height/Age") },
+                            modifier      = Modifier.weight(1f),
+                            singleLine    = true
+                        )
+                        OutlinedTextField(
+                            value         = clothingAppearance,
+                            onValueChange = { clothingAppearance = it },
+                            label         = { Text("Clothing") },
+                            modifier      = Modifier.weight(1f),
+                            singleLine    = true
+                        )
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
-            Text(statusText, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+            Text(
+                statusText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
             Spacer(modifier = Modifier.height(8.dp))
 
+            // ---- Run AI recognition button ----
             Button(
                 onClick = {
                     if (selectedBitmap == null) return@Button
-                    isProcessing = true; scanResults = emptyList()
+                    isProcessing = true
+                    scanResults  = emptyList()
                     scope.launch(Dispatchers.Default) {
                         try {
                             withContext(Dispatchers.Main) { statusText = "☁️ Fetching Active Cases..." }
                             val db = FirebaseFirestore.getInstance()
-                            val snapshot = db.collection("MissingPersons").whereIn("status", listOf(MPStatus.ACTIVE.name, MPStatus.PENDING_VERIFICATION.name)).get().await()
-                            val cloudData = snapshot.toObjects(MissingPerson::class.java).filter { it.embedding.isNotEmpty() }
+                            val snapshot = db.collection("MissingPersons")
+                                .whereIn(
+                                    "status",
+                                    listOf(MPStatus.ACTIVE.name, MPStatus.PENDING_VERIFICATION.name)
+                                )
+                                .get().await()
+                            val cloudData = snapshot.toObjects(MissingPerson::class.java)
+                                .filter { it.embedding.isNotEmpty() }
 
                             withContext(Dispatchers.Main) { statusText = "🧠 AI is scanning faces..." }
-                            val yolo = YoloFaceDetector(context)
+                            val yolo      = YoloFaceDetector(context)
                             val extractor = MobileFaceNetExtractor(context)
                             try {
-                                val faces = yolo.detect(selectedBitmap!!)
-                                val drawList = mutableListOf<ImageUtils.MatchInfo>()
+                                val faces          = yolo.detect(selectedBitmap!!)
+                                val drawList       = mutableListOf<ImageUtils.MatchInfo>()
                                 val currentResults = mutableListOf<FaceScanResult>()
 
                                 for (faceBox in faces) {
-                                    val crop = ImageUtils.cropFaceWithPadding(selectedBitmap!!, faceBox.boundingBox) ?: continue
-                                    val currentFeature = extractor.extractFeature(crop).map { it.toDouble() }
+                                    val crop = ImageUtils.cropFaceWithPadding(
+                                        selectedBitmap!!, faceBox.boundingBox
+                                    ) ?: continue
+                                    val currentFeature = extractor.extractFeature(crop)
+                                        .map { it.toDouble() }
                                     var bestMatch: MissingPerson? = null
                                     var highestConf = 0f
                                     for (person in cloudData) {
-                                        val sim = extractor.calculateSimilarity(person.embedding.map { it.toFloat() }.toFloatArray(), currentFeature.map{ it.toFloat() }.toFloatArray())
+                                        val sim = extractor.calculateSimilarity(
+                                            person.embedding.map { it.toFloat() }.toFloatArray(),
+                                            currentFeature.map { it.toFloat() }.toFloatArray()
+                                        )
                                         val conf = extractor.calculateConfidenceScore(sim)
-                                        if (conf > highestConf) { highestConf = conf; bestMatch = person }
+                                        if (conf > highestConf) {
+                                            highestConf = conf
+                                            bestMatch   = person
+                                        }
                                     }
                                     val percentage = (highestConf * 100).roundToInt()
                                     val isMatch = highestConf > 0.80f && bestMatch != null
-                                    currentResults.add(FaceScanResult(isMatch, if (isMatch) bestMatch else null, percentage, currentFeature))
-                                    drawList.add(ImageUtils.MatchInfo(faceBox.boundingBox, isMatch, if(isMatch && bestMatch != null) "${bestMatch.name} $percentage%" else "Unknown"))
+                                    currentResults.add(
+                                        FaceScanResult(
+                                            isMatch,
+                                            if (isMatch) bestMatch else null,
+                                            percentage,
+                                            currentFeature
+                                        )
+                                    )
+                                    drawList.add(
+                                        ImageUtils.MatchInfo(
+                                            faceBox.boundingBox,
+                                            isMatch,
+                                            if (isMatch && bestMatch != null) " $percentage%" else "Unknown"
+                                        )
+                                    )
                                 }
 
                                 val finalImg = ImageUtils.drawBoundingBoxes(selectedBitmap!!, drawList)
                                 withContext(Dispatchers.Main) {
                                     resultBitmap = finalImg
-                                    scanResults = currentResults.distinctBy { it.matchedPerson?.id ?: it.faceFeature.hashCode() }
-                                    isProcessing = false; statusText = "✅ Scan Complete! Found ${faces.size} face(s)."
+                                    scanResults  = currentResults.distinctBy {
+                                        it.matchedPerson?.id ?: it.faceFeature.hashCode()
+                                    }
+                                    isProcessing = false
+                                    statusText   = "✅ Scan Complete! Found  face(s)."
                                 }
                             } finally {
                                 yolo.close()
                                 extractor.close()
                             }
                         } catch (e: Exception) {
-                            withContext(Dispatchers.Main) { statusText = "💥 Error: ${e.message}"; isProcessing = false }
+                            withContext(Dispatchers.Main) {
+                                statusText   = "💥 Error: "
+                                isProcessing = false
+                            }
                         }
                     }
                 },
-                modifier = Modifier.fillMaxWidth().height(55.dp), enabled = !isProcessing && selectedBitmap != null && !isUploading
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(55.dp),
+                enabled  = !isProcessing && selectedBitmap != null && !isUploading
             ) {
-                if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary)
-                else Text("Run AI Recognition", fontSize = MaterialTheme.typography.titleMedium.fontSize)
+                if (isProcessing)
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        color    = MaterialTheme.colorScheme.onPrimary
+                    )
+                else
+                    Text(
+                        "Run AI Recognition",
+                        fontSize = MaterialTheme.typography.titleMedium.fontSize
+                    )
             }
 
+            // ================================================================
+            // AI analysis results section
+            // ================================================================
             if (scanResults.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(24.dp))
-                Text("AI Analysis Results", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "AI Analysis Results",
+                    fontWeight = FontWeight.Bold,
+                    style      = MaterialTheme.typography.titleLarge
+                )
 
+                // ------------------------------------------------------------
+                // Retry banner
+                // Shows only when a real match exists but auto-upload has not
+                // succeeded yet and is not currently running. Tapping Retry
+                // creates a new list reference, which forces
+                // LaunchedEffect(scanResults) to re-execute and attempt upload.
+                // ------------------------------------------------------------
+                val pendingMatch = scanResults.firstOrNull {
+                    it.isMatch && it.matchedPerson != null
+                }
+                if (pendingMatch != null && !hasAutoUploaded && !isUploading) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors   = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "⚠️ Tip not delivered",
+                                    style      = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color      = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    "Auto-upload did not complete. Tap Retry to resend the tip to the family.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    // Force LaunchedEffect(scanResults) to re-run
+                                    // by creating a new list reference.
+                                    scanResults = scanResults.toList()
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor   = Color.White
+                                )
+                            ) {
+                                Text("Retry")
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                // ------------------------------------------------------------
+                // Per-face result cards
+                // ------------------------------------------------------------
                 scanResults.forEach { result ->
                     var isItemUploading by remember { mutableStateOf(false) }
-                    var isItemUploaded by remember { mutableStateOf(false) }
-                    val cardColor = if (result.isMatch) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant
-                    
-                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), colors = CardDefaults.cardColors(containerColor = cardColor)) {
-                        Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    var isItemUploaded  by remember { mutableStateOf(false) }
+                    val cardColor = if (result.isMatch)
+                        MaterialTheme.colorScheme.errorContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        colors   = CardDefaults.cardColors(containerColor = cardColor)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .fillMaxWidth()
+                        ) {
+                            Row(
+                                verticalAlignment     = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier              = Modifier.fillMaxWidth()
+                            ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(if (result.isMatch) "⚠️ MATCH FOUND: ${result.matchedPerson?.name}" else "❔ Unknown Face Detected", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = if(result.isMatch) Color.Red else Color.Unspecified)
+                                    Text(
+                                        if (result.isMatch) "⚠️ MATCH FOUND: "
+                                        else "❔ Unknown Face Detected",
+                                        fontWeight = FontWeight.Bold,
+                                        style      = MaterialTheme.typography.titleMedium,
+                                        color      = if (result.isMatch) Color.Red else Color.Unspecified
+                                    )
                                     if (result.isMatch) {
-                                        Text("Confidence: ${result.confidence}%", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                                        Text("Contact: ${result.matchedPerson?.contactPhone}", style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            "Confidence: %",
+                                            color      = MaterialTheme.colorScheme.error,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            "Contact: ",
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
                                     }
                                 }
                                 if (result.isMatch) {
                                     IconButton(
-                                        onClick = { context.startActivity(Intent(Intent.ACTION_DIAL).apply { data = "tel:${result.matchedPerson?.contactPhone}".toUri() }) },
-                                        modifier = Modifier.background(Color.White, shape = RoundedCornerShape(50))
-                                    ) { Icon(Icons.Default.Call, "Call", tint = Color.Green) }
+                                        onClick = {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_DIAL).apply {
+                                                    data = "tel:".toUri()
+                                                }
+                                            )
+                                        },
+                                        modifier = Modifier.background(
+                                            Color.White,
+                                            shape = RoundedCornerShape(50)
+                                        )
+                                    ) {
+                                        Icon(Icons.Default.Call, "Call", tint = Color.Green)
+                                    }
                                 }
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))
 
                             if (result.isMatch) {
+                                // Match case — auto-upload is handled by LaunchedEffect.
+                                // Show a disabled "sending" state so the user understands.
                                 Button(
-                                    onClick = { },
+                                    onClick  = { },
                                     modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray),
-                                    enabled = false
+                                    colors   = ButtonDefaults.buttonColors(
+                                        containerColor = Color.DarkGray
+                                    ),
+                                    enabled  = false
                                 ) {
-                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        color    = Color.White
+                                    )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text("Auto-Sending Tip to Family...")
                                 }
                             } else {
+                                // Unknown face — user can manually save as an orphan clue.
                                 Button(
                                     onClick = {
                                         isItemUploading = true
                                         scope.launch(Dispatchers.Default) {
                                             try {
-                                                val maxDim = maxOf(selectedBitmap!!.width, selectedBitmap!!.height)
+                                                val maxDim = maxOf(
+                                                    selectedBitmap!!.width,
+                                                    selectedBitmap!!.height
+                                                )
                                                 val scaleRatio = if (maxDim > 400) 400f / maxDim else 1.0f
-                                                val targetWidth = (selectedBitmap!!.width * scaleRatio).toInt()
+                                                val targetWidth  = (selectedBitmap!!.width  * scaleRatio).toInt()
                                                 val targetHeight = (selectedBitmap!!.height * scaleRatio).toInt()
                                                 val scaledBitmap = if (scaleRatio < 1.0f) {
-                                                    Bitmap.createScaledBitmap(selectedBitmap!!, targetWidth, targetHeight, true)
+                                                    Bitmap.createScaledBitmap(
+                                                        selectedBitmap!!,
+                                                        targetWidth, targetHeight, true
+                                                    )
                                                 } else {
                                                     selectedBitmap!!
                                                 }
                                                 val baos = ByteArrayOutputStream()
-                                                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos)
+                                                scaledBitmap.compress(
+                                                    Bitmap.CompressFormat.JPEG, 50, baos
+                                                )
                                                 if (scaledBitmap != selectedBitmap) {
                                                     scaledBitmap.recycle()
                                                 }
-                                                val base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT)
+                                                val base64Image = Base64.encodeToString(
+                                                    baos.toByteArray(), Base64.DEFAULT
+                                                )
 
                                                 val db = FirebaseFirestore.getInstance()
-                                                val currentUserId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
-                                                val newSightingRef = db.collection("Sightings").document()
+                                                val currentUserId =
+                                                    com.google.firebase.auth.FirebaseAuth
+                                                        .getInstance().currentUser?.uid ?: ""
+                                                val newSightingRef =
+                                                    db.collection("Sightings").document()
                                                 val sightingData = SightingRecord(
-                                                    id = newSightingRef.id,
-                                                    ownerId = currentUserId,
-                                                    sightingDate = sightingDate,
-                                                    location = sightingLocation.ifBlank { "Location not provided" },
-                                                    locationLat = locationLat,
-                                                    locationLng = locationLng,
-                                                    estimatedFeatures = estimatedFeatures, clothingAppearance = clothingAppearance,
-                                                    photoBase64 = base64Image, embedding = result.faceFeature,
-                                                    status = SightingStatus.PENDING.name,
+                                                    id                    = newSightingRef.id,
+                                                    ownerId               = currentUserId,
+                                                    sightingDate          = sightingDate,
+                                                    location              = sightingLocation.ifBlank { "Location not provided" },
+                                                    locationLat           = locationLat,
+                                                    locationLng           = locationLng,
+                                                    estimatedFeatures     = estimatedFeatures,
+                                                    clothingAppearance    = clothingAppearance,
+                                                    photoBase64           = base64Image,
+                                                    embedding             = result.faceFeature,
+                                                    status                = SightingStatus.PENDING.name,
                                                     linkedMissingPersonId = null,
-                                                    aiConfidenceScore = result.confidence
+                                                    aiConfidenceScore     = result.confidence
                                                 )
 
                                                 newSightingRef.set(sightingData).await()
 
                                                 withContext(Dispatchers.Main) {
                                                     isItemUploading = false
-                                                    isItemUploaded = true
-                                                    Toast.makeText(context, "✅ Saved to Orphan Clue Database", Toast.LENGTH_LONG).show()
+                                                    isItemUploaded  = true
+                                                    Toast.makeText(
+                                                        context,
+                                                        "✅ Saved to Orphan Clue Database",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
                                                 }
                                             } catch (e: Exception) {
-                                                withContext(Dispatchers.Main) { isItemUploading = false; Toast.makeText(context, "Upload failed: ${e.message}", Toast.LENGTH_SHORT).show() }
+                                                withContext(Dispatchers.Main) {
+                                                    isItemUploading = false
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Upload failed: ",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
                                             }
                                         }
                                     },
                                     modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                    enabled = !isItemUploading && !isItemUploaded
+                                    colors   = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    enabled  = !isItemUploading && !isItemUploaded
                                 ) {
-                                    if (isItemUploading) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
-                                    else if (isItemUploaded) {
-                                        Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp))
+                                    if (isItemUploading) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(20.dp),
+                                            color    = Color.White
+                                        )
+                                    } else if (isItemUploaded) {
+                                        Icon(
+                                            Icons.Default.Check,
+                                            null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
                                         Text("Saved")
                                     } else {
-                                        Icon(Icons.AutoMirrored.Filled.Send, null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp))
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.Send,
+                                            null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
                                         Text("Save to Orphan Clue Database")
                                     }
                                 }
@@ -508,7 +844,9 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
                     }
                 }
             }
+
             Spacer(modifier = Modifier.height(80.dp))
         }
     }
 }
+

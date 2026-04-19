@@ -1,134 +1,161 @@
 package com.example.lostfound
 
-import android.graphics.*
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.BitmapShader
+import android.graphics.BlurMaskFilter
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.Shader
 import android.util.Base64
+import androidx.core.graphics.applyCanvas
 import com.google.android.gms.maps.model.BitmapDescriptor
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 
-/**
- * Utility for building custom map markers that show a circular photo
- * surrounded by a colored ring and a pin tail.
- *
- * Red ring  -> Missing Person
- * Blue ring -> Sighting
- */
 object MapMarkerUtils {
 
-    private const val MARKER_WIDTH = 140
-    private const val MARKER_HEIGHT = 170
-    private const val PHOTO_SIZE = 110
-    private const val RING_WIDTH = 8f
+    // ---- Colors ----
+    val COLOR_MISSING  = Color.parseColor("#E53935")
+    val COLOR_SIGHTING = Color.parseColor("#1E88E5")
 
-    val COLOR_MISSING: Int = Color.parseColor("#E53935")   // Red
-    val COLOR_SIGHTING: Int = Color.parseColor("#1E88E5")  // Blue
+    // ---- Sizes (in pixels) ----
+    private const val MARKER_SIZE  = 200      // 头像 marker 整体宽度
+    private const val PHOTO_SIZE   = 160      // 圆形头像直径
+    private const val BORDER_WIDTH = 5f       // 外圈粗细
+    private const val TAIL_HEIGHT  = 22       // 底部尖角高度
+    private const val DOT_SIZE     = 44       // 纯色圆点 marker 尺寸
 
-    fun buildMarker(
-        base64Photo: String,
-        ringColor: Int
-    ): BitmapDescriptor {
-        val photoBitmap = decodeSafely(base64Photo)
-        val canvasBitmap = Bitmap.createBitmap(
-            MARKER_WIDTH, MARKER_HEIGHT, Bitmap.Config.ARGB_8888
-        )
-        val canvas = Canvas(canvasBitmap)
+    /**
+     * 带头像的 marker —— 高 zoom 级别使用。
+     * 使用 center-crop,人脸不会被压缩变形。
+     */
+    fun buildMarker(photoBase64: String, ringColor: Int): BitmapDescriptor {
+        val totalW = MARKER_SIZE
+        val totalH = MARKER_SIZE + TAIL_HEIGHT
 
-        drawPinTail(canvas, ringColor)
-        drawPhotoCircle(canvas, photoBitmap, ringColor)
+        val bitmap = Bitmap.createBitmap(totalW, totalH, Bitmap.Config.ARGB_8888)
+        bitmap.applyCanvas {
+            val cx = totalW / 2f
+            val cy = MARKER_SIZE / 2f
+            val ringRadius = MARKER_SIZE / 2f - BORDER_WIDTH / 2f
 
-        return BitmapDescriptorFactory.fromBitmap(canvasBitmap)
+            // 1. 阴影
+            val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(60, 0, 0, 0)
+                maskFilter = BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL)
+            }
+            drawCircle(cx, cy + 4f, ringRadius, shadowPaint)
+
+            // 2. 外圈(颜色环)
+            val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = ringColor
+                style = Paint.Style.FILL
+            }
+            drawCircle(cx, cy, ringRadius, ringPaint)
+
+            // 3. 底部尖角
+            val tailPath = Path().apply {
+                moveTo(cx - 16f, cy + ringRadius - 4f)
+                lineTo(cx + 16f, cy + ringRadius - 4f)
+                lineTo(cx, cy + ringRadius + TAIL_HEIGHT - 2f)
+                close()
+            }
+            drawPath(tailPath, ringPaint)
+
+            // 4. 白色内圈
+            val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                style = Paint.Style.FILL
+            }
+            drawCircle(cx, cy, PHOTO_SIZE / 2f + 2f, whitePaint)
+
+            // 5. 头像(center-crop 到圆形)
+            val avatar = decodePhoto(photoBase64)
+            if (avatar != null) {
+                val cropped = centerCropToSquare(avatar, PHOTO_SIZE)
+                val avatarPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    shader = BitmapShader(
+                        cropped,
+                        Shader.TileMode.CLAMP,
+                        Shader.TileMode.CLAMP
+                    ).apply {
+                        val matrix = Matrix().apply {
+                            setTranslate(cx - PHOTO_SIZE / 2f, cy - PHOTO_SIZE / 2f)
+                        }
+                        setLocalMatrix(matrix)
+                    }
+                }
+                drawCircle(cx, cy, PHOTO_SIZE / 2f, avatarPaint)
+            } else {
+                // 无照片时的占位
+                val placeholderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.argb(40, 0, 0, 0)
+                }
+                drawCircle(cx, cy, PHOTO_SIZE / 2f, placeholderPaint)
+            }
+        }
+
+        return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
-    private fun decodeSafely(base64: String): Bitmap? {
-        if (base64.isBlank()) return null
+    /**
+     * 纯色圆点 marker —— 低 zoom 级别使用。
+     */
+    fun buildDotMarker(color: Int): BitmapDescriptor {
+        val size = DOT_SIZE
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        bitmap.applyCanvas {
+            val cx = size / 2f
+            val cy = size / 2f
+
+            // 阴影
+            val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.color = Color.argb(80, 0, 0, 0)
+                maskFilter = BlurMaskFilter(4f, BlurMaskFilter.Blur.NORMAL)
+            }
+            drawCircle(cx, cy + 2f, size / 2f - 4f, shadowPaint)
+
+            // 白色外圈
+            val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.color = Color.WHITE
+            }
+            drawCircle(cx, cy, size / 2f - 3f, whitePaint)
+
+            // 内部彩色
+            val colorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.color = color
+            }
+            drawCircle(cx, cy, size / 2f - 7f, colorPaint)
+        }
+        return BitmapDescriptorFactory.fromBitmap(bitmap)
+    }
+
+    // -------- Helpers --------
+
+    private fun decodePhoto(base64Str: String): Bitmap? {
+        if (base64Str.isBlank()) return null
         return try {
-            val bytes = Base64.decode(base64, Base64.DEFAULT)
+            val bytes = Base64.decode(base64Str, Base64.DEFAULT)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (e: Exception) {
-            e.printStackTrace()
             null
         }
     }
 
-    private fun drawPinTail(canvas: Canvas, color: Int) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = color
-            style = Paint.Style.FILL
-        }
-        val centerX = MARKER_WIDTH / 2f
-        val tailTopY = (PHOTO_SIZE + RING_WIDTH * 2) - 4f
-        val tailBottomY = MARKER_HEIGHT.toFloat() - 4f
-
-        val path = Path().apply {
-            moveTo(centerX - 18f, tailTopY)
-            lineTo(centerX + 18f, tailTopY)
-            lineTo(centerX, tailBottomY)
-            close()
-        }
-        canvas.drawPath(path, paint)
-    }
-
-    private fun drawPhotoCircle(
-        canvas: Canvas,
-        photo: Bitmap?,
-        ringColor: Int
-    ) {
-        val centerX = MARKER_WIDTH / 2f
-        val centerY = (PHOTO_SIZE / 2f) + RING_WIDTH
-        val outerRadius = (PHOTO_SIZE / 2f) + RING_WIDTH
-        val innerRadius = PHOTO_SIZE / 2f
-
-        // Outer colored ring
-        val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = ringColor
-            style = Paint.Style.FILL
-        }
-        canvas.drawCircle(centerX, centerY, outerRadius, ringPaint)
-
-        // Inner white backdrop
-        val backdropPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            style = Paint.Style.FILL
-        }
-        canvas.drawCircle(centerX, centerY, innerRadius, backdropPaint)
-
-        if (photo != null) {
-            val scaled = Bitmap.createScaledBitmap(
-                photo, PHOTO_SIZE, PHOTO_SIZE, true
-            )
-            val photoPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-
-            val savedLayer = canvas.saveLayer(
-                centerX - innerRadius,
-                centerY - innerRadius,
-                centerX + innerRadius,
-                centerY + innerRadius,
-                null
-            )
-            canvas.drawCircle(centerX, centerY, innerRadius, photoPaint)
-            photoPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
-            canvas.drawBitmap(
-                scaled,
-                centerX - innerRadius,
-                centerY - innerRadius,
-                photoPaint
-            )
-            photoPaint.xfermode = null
-            canvas.restoreToCount(savedLayer)
-
-            if (scaled != photo) scaled.recycle()
-        } else {
-            val placeholderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.LTGRAY
-                style = Paint.Style.FILL
-            }
-            canvas.drawCircle(centerX, centerY, innerRadius - 2f, placeholderPaint)
-
-            val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.DKGRAY
-                textSize = 48f
-                textAlign = Paint.Align.CENTER
-            }
-            canvas.drawText("👤", centerX, centerY + 16f, glyphPaint)
-        }
+    /**
+     * Center-crop:以较短边裁出正方形,再缩放到目标尺寸。
+     * 确保人脸比例正确,不被拉伸。
+     */
+    private fun centerCropToSquare(src: Bitmap, targetSize: Int): Bitmap {
+        val shortSide = minOf(src.width, src.height)
+        val x = (src.width  - shortSide) / 2
+        val y = (src.height - shortSide) / 2
+        val square = Bitmap.createBitmap(src, x, y, shortSide, shortSide)
+        return if (square.width != targetSize)
+            Bitmap.createScaledBitmap(square, targetSize, targetSize, true)
+        else square
     }
 }

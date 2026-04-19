@@ -47,8 +47,8 @@ import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.BitmapDescriptor
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
-import com.google.firebase.firestore.FirebaseFirestore
 import com.google.maps.android.compose.*
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -90,6 +90,10 @@ private val ColorMissing  = Color(0xFFE53935)
 private val ColorSighting = Color(0xFF1E88E5)
 private val ColorPending  = Color(0xFFFFA000)
 
+// 低于此 zoom 级别时,地图上的 marker 只显示纯色圆点;
+// 高于此 zoom 时显示带头像的 marker。可按产品需求调整。
+private const val ZOOM_THRESHOLD = 9f
+
 // ============================================================
 // Custom three-stage sheet
 // ============================================================
@@ -105,7 +109,7 @@ private enum class SheetStage { Peek, Half, Full }
 fun HomeScreen(
     onNavigateToProfile: () -> Unit = {},
     onNavigateToTimeline: (String) -> Unit,
-    bottomBarHeight: Dp = 80.dp           // height of your Home/+/Alerts bar
+    bottomBarHeight: Dp = 80.dp
 ) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
@@ -125,6 +129,11 @@ fun HomeScreen(
 
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(3.1390, 101.6869), 6f)
+    }
+
+    // --- Zoom 监听:只有跨过阈值时才触发实际重组 ---
+    val showPhotoMarkers by remember {
+        derivedStateOf { cameraPositionState.position.zoom >= ZOOM_THRESHOLD }
     }
 
     // --- Firestore listeners ---
@@ -214,15 +223,23 @@ fun HomeScreen(
         mapMarkers = markers
     }
 
-    // --- Pre-generate custom marker icons ---
+    // --- Pre-generate marker icons(头像版 + 纯色点版)---
     LaunchedEffect(mapMarkers) {
         withContext(Dispatchers.Default) {
+            // 纯色点 —— 只需两个
+            if (!markerIconCache.containsKey("DOT_M"))
+                markerIconCache["DOT_M"] = MapMarkerUtils.buildDotMarker(MapMarkerUtils.COLOR_MISSING)
+            if (!markerIconCache.containsKey("DOT_S"))
+                markerIconCache["DOT_S"] = MapMarkerUtils.buildDotMarker(MapMarkerUtils.COLOR_SIGHTING)
+
+            // 头像版 —— 每个 marker 一个,key 用 id + photo 哈希保证唯一
             for (marker in mapMarkers) {
-                val key   = if (marker.isMissingPerson) "M_" else "S_"
-                val color = if (marker.isMissingPerson) MapMarkerUtils.COLOR_MISSING
-                else MapMarkerUtils.COLOR_SIGHTING
-                if (!markerIconCache.containsKey(key))
-                    markerIconCache[key] = MapMarkerUtils.buildMarker(marker.photoBase64, color)
+                val photoKey = "PHOTO__"
+                if (!markerIconCache.containsKey(photoKey)) {
+                    val color = if (marker.isMissingPerson) MapMarkerUtils.COLOR_MISSING
+                    else MapMarkerUtils.COLOR_SIGHTING
+                    markerIconCache[photoKey] = MapMarkerUtils.buildMarker(marker.photoBase64, color)
+                }
             }
         }
     }
@@ -245,17 +262,15 @@ fun HomeScreen(
     val screenHeightDp = config.screenHeightDp.dp
     val screenHeightPx = with(density) { screenHeightDp.toPx() }
 
-    // Sheet heights (measured from bottom of screen upward)
     val peekHeightPx = with(density) { (bottomBarHeight + 72.dp).toPx() }
     val halfHeightPx = screenHeightPx * 0.55f
     val fullHeightPx = screenHeightPx * 0.90f
 
-    // Pre-computed offsets (from top of screen; larger value = sheet lower)
     val peekOffset = screenHeightPx - peekHeightPx
     val halfOffset = screenHeightPx - halfHeightPx
     val fullOffset = screenHeightPx - fullHeightPx
 
-    val sheetAnim = remember { Animatable(halfOffset) }   // START IN THE MIDDLE
+    val sheetAnim = remember { Animatable(halfOffset) }
     var currentStage by remember { mutableStateOf(SheetStage.Half) }
 
     suspend fun snapToStage(stage: SheetStage) {
@@ -294,11 +309,21 @@ fun HomeScreen(
             )
         ) {
             mapMarkers.forEach { marker ->
-                val key = if (marker.isMissingPerson) "M_" else "S_"
+                val iconKey = if (showPhotoMarkers) {
+                    "PHOTO__"
+                } else {
+                    if (marker.isMissingPerson) "DOT_M" else "DOT_S"
+                }
+                val icon = markerIconCache[iconKey]
+
+                // 头像 marker 的 anchor 在底部尖角,纯色点在中心
+                val anchor = if (showPhotoMarkers) Offset(0.5f, 1.0f)
+                else Offset(0.5f, 0.5f)
+
                 MarkerInfoWindowContent(
                     state  = MarkerState(position = marker.latLng),
-                    icon   = markerIconCache[key],
-                    anchor = Offset(0.5f, 1.0f),
+                    icon   = icon,
+                    anchor = anchor,
                     title  = marker.title,
                     onInfoWindowClick = {
                         if (marker.isMissingPerson) onNavigateToTimeline(marker.id)
@@ -308,7 +333,7 @@ fun HomeScreen(
             }
         }
 
-        // ---- Top scrim for readability ----
+        // ---- Top scrim ----
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -318,14 +343,14 @@ fun HomeScreen(
                 )
         )
 
-        // ---- Top bar overlay ----
+        // ---- Top bar ----
         HomeTopBar(
             searchQuery    = searchQuery,
             onSearchChange = { searchQuery = it },
             onProfileClick = onNavigateToProfile
         )
 
-        // ---- Custom three-stage bottom sheet ----
+        // ---- Three-stage bottom sheet ----
         val sheetOffsetDp = with(density) { sheetAnim.value.toDp() }
 
         Surface(
@@ -333,96 +358,99 @@ fun HomeScreen(
                 .fillMaxWidth()
                 .fillMaxHeight()
                 .offset(y = sheetOffsetDp)
-                .padding(bottom = bottomBarHeight),   // stays above your bottom bar
-            shape           = RoundedCornerShape(topStart = 15.dp, topEnd = 15.dp),
-            shadowElevation = 16.dp,
-            color           = MaterialTheme.colorScheme.surface
+                .padding(bottom = bottomBarHeight),
+                shape           = RoundedCornerShape(topStart = 15.dp, topEnd = 15.dp),
+                shadowElevation = 16.dp,
+                color           = MaterialTheme.colorScheme.surface
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
 
-                // ---- Drag handle + header ----
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .pointerInput(Unit) {
-                            detectVerticalDragGestures(
-                                onVerticalDrag = { _, dragAmount ->
-                                    scope.launch {
-                                        val newVal = (sheetAnim.value + dragAmount)
-                                            .coerceIn(fullOffset, peekOffset)
-                                        sheetAnim.snapTo(newVal)
-                                    }
-                                },
-                                onDragEnd = {
-                                    val current = sheetAnim.value
-                                    val nearest = listOf(
-                                        SheetStage.Peek to peekOffset,
-                                        SheetStage.Half to halfOffset,
-                                        SheetStage.Full to fullOffset
-                                    ).minByOrNull { abs(it.second - current) }
-                                        ?.first ?: SheetStage.Half
-                                    scope.launch { snapToStage(nearest) }
+            // ---- Drag handle + header ----
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures(
+                            onVerticalDrag = { _, dragAmount ->
+                                scope.launch {
+                                    val newVal = (sheetAnim.value + dragAmount)
+                                        .coerceIn(fullOffset, peekOffset)
+                                    sheetAnim.snapTo(newVal)
                                 }
-                            )
-                        }
-                        .clickable { cycleStage() }
-                        .padding(vertical = 10.dp)
-                ) {
-                    Column(
-                        modifier            = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .width(40.dp)
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(Color(0xFFBDBDBD))
+                            },
+                            onDragEnd = {
+                                val current = sheetAnim.value
+                                val nearest = listOf(
+                                    SheetStage.Peek to peekOffset,
+                                    SheetStage.Half to halfOffset,
+                                    SheetStage.Full to fullOffset
+                                ).minByOrNull { abs(it.second - current) }
+                                    ?.first ?: SheetStage.Half
+                                scope.launch { snapToStage(nearest) }
+                            }
                         )
-                        Spacer(Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "Nearby Alerts",
-                                style      = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color      = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(Modifier.width(8.dp))
+                    }
+                    .clickable { cycleStage() }
+                    .padding(vertical = 10.dp)
+            ) {
+                Column(
+                    modifier            = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(40.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color(0xFFBDBDBD))
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Nearby Alerts",
+                            style      = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color      = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        if (combinedFeed.isNotEmpty()) {
                             Surface(
                                 color = ColorMissing,
                                 shape = RoundedCornerShape(50.dp)
                             ) {
                                 Text(
-                                    "${combinedFeed.size}",
+                                    combinedFeed.size.toString(),
                                     color      = Color.White,
                                     modifier   = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                     style      = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
-                            Spacer(Modifier.width(8.dp))
-                            val hint = when (currentStage) {
-                                SheetStage.Peek -> "Tap to expand"
-                                SheetStage.Half -> "Tap for full view"
-                                SheetStage.Full -> "Tap to collapse"
-                            }
-                            Text(
-                                "· $hint",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.Gray
-                            )
                         }
+
+                        Spacer(Modifier.width(8.dp))
+                        val hint = when (currentStage) {
+                            SheetStage.Peek -> "Tap to expand"
+                            SheetStage.Half -> "Tap for full view"
+                            SheetStage.Full -> "Tap to collapse"
+                        }
+                        Text(
+                            "· $hint",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
                     }
                 }
-
-                // ---- Sheet body ----
-                SheetBody(
-                    isLoading            = isLoading,
-                    combinedFeed         = combinedFeed,
-                    onNavigateToTimeline = onNavigateToTimeline
-                )
             }
+
+            // ---- Sheet body ----
+            SheetBody(
+                isLoading            = isLoading,
+                combinedFeed         = combinedFeed,
+                onNavigateToTimeline = onNavigateToTimeline
+            )
         }
+    }
     }
 
     // Sighting detail dialog
@@ -446,7 +474,6 @@ private fun HomeTopBar(
             .fillMaxWidth()
             .padding(top = 16.dp, start = 16.dp, end = 16.dp)
     ) {
-        // Floating search bar — offset right so it doesn't overlap profile FAB
         Card(
             modifier  = Modifier
                 .fillMaxWidth()
@@ -492,7 +519,6 @@ private fun HomeTopBar(
             }
         }
 
-        // Profile FAB — top-left
         Box(
             modifier         = Modifier
                 .size(48.dp)
@@ -1004,7 +1030,8 @@ fun SightingCard(sighting: SightingRecord) {
                 Spacer(Modifier.height(4.dp))
 
                 val description = buildString {
-                    if (sighting.estimatedFeatures.isNotBlank()) append(sighting.estimatedFeatures)
+                    if (sighting.estimatedFeatures.isNotBlank())
+                        append(sighting.estimatedFeatures)
                     if (sighting.clothingAppearance.isNotBlank()) {
                         if (isNotEmpty()) append(" · ")
                         append(sighting.clothingAppearance)
@@ -1041,26 +1068,37 @@ fun SightingCard(sighting: SightingRecord) {
 // Helpers
 // ============================================================
 
-suspend fun getLatLngFromAddress(context: Context, address: String): LatLng? =
-    withContext(Dispatchers.IO) {
-        if (address.isBlank()) return@withContext null
-        val regex = Regex("""(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)""")
-        val match = regex.find(address)
-        if (match != null) return@withContext LatLng(
+suspend fun getLatLngFromAddress(
+    context: Context,
+    address: String
+): LatLng? = withContext(Dispatchers.IO) {
+    if (address.isBlank()) return@withContext null
+
+    // 直接支持 "lat,lng" 格式
+    val regex = Regex("""(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)""")
+    val match = regex.find(address)
+    if (match != null) {
+        return@withContext LatLng(
             match.groupValues[1].toDouble(),
             match.groupValues[2].toDouble()
         )
-        try {
-            val geocoder = Geocoder(context, Locale.getDefault())
-            @Suppress("DEPRECATION")
-            val results = geocoder.getFromLocationName(address, 1)
-            if (!results.isNullOrEmpty())
-                return@withContext LatLng(results[0].latitude, results[0].longitude)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        null
     }
+
+    try {
+        val geocoder = Geocoder(context, Locale.getDefault())
+        @Suppress("DEPRECATION")
+        val results = geocoder.getFromLocationName(address, 1)
+        if (!results.isNullOrEmpty()) {
+            return@withContext LatLng(
+                results[0].latitude,
+                results[0].longitude
+            )
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    null
+}
 
 fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
     if (base64Str.isBlank()) return null
@@ -1072,4 +1110,3 @@ fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
         null
     }
 }
-
