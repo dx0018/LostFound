@@ -166,7 +166,8 @@ fun ReportScreen(onNavigateBack: () -> Unit) {
                 title = { Text("Report Missing Person", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) { Icon(Icons.Default.ArrowBack, "Back") }
-                }
+                },
+                windowInsets = WindowInsets(top = 8.dp)
             )
         }
     ) { paddingValues ->

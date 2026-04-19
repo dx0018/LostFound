@@ -51,6 +51,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
+import androidx.compose.foundation.layout.WindowInsets
 
 data class FaceScanResult(
     val isMatch: Boolean,
@@ -257,7 +258,8 @@ fun SightingScreen(onNavigateBack: () -> Unit) {
                 title = { Text("Report a Sighting", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                }
+                },
+                windowInsets = WindowInsets(top = 8.dp)
             )
         }
     ) { paddingValues ->

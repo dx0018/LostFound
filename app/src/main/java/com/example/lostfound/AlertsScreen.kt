@@ -12,6 +12,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -56,7 +58,7 @@ fun AlertsScreen(onNavigateToTimeline: (String) -> Unit) {
         }
 
         Box(modifier = Modifier.fillMaxSize()) {
-            if (selectedTabIndex == 0) NotificationsTab(currentUserId) else MyRecordsTab(currentUserId,onNavigateToTimeline)
+            if (selectedTabIndex == 0) NotificationsTab(currentUserId) else MyRecordsTab(currentUserId, onNavigateToTimeline)
         }
     }
 }
@@ -68,7 +70,6 @@ fun NotificationsTab(currentUserId: String) {
     var notifications by remember { mutableStateOf<List<NotificationRecord>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 
-    // 弹窗状态
     var selectedNote by remember { mutableStateOf<NotificationRecord?>(null) }
 
     DisposableEffect(Unit) {
@@ -79,7 +80,6 @@ fun NotificationsTab(currentUserId: String) {
                     isLoading = false
                     return@addSnapshotListener
                 }
-
                 if (snapshot != null) {
                     val fetchedList = snapshot.toObjects(NotificationRecord::class.java)
                     notifications = fetchedList.sortedByDescending { it.timestamp }
@@ -98,7 +98,6 @@ fun NotificationsTab(currentUserId: String) {
             items(notifications) { note ->
                 NotificationCard(note) {
                     selectedNote = note
-                    // 点击后自动标记为已读 (通知界面的红点就会消失)
                     if (!note.isRead) {
                         FirebaseFirestore.getInstance().collection("Notifications").document(note.id).update("isRead", true)
                     }
@@ -117,63 +116,78 @@ fun NotificationsTab(currentUserId: String) {
                     confirmButton = {
                         Button(onClick = {
                             scope.launch(Dispatchers.IO) {
-                                val db = FirebaseFirestore.getInstance()
-                                // 1. 线索状态改为 LINKED
-                                db.collection("Sightings").document(note.relatedSightingId).update("status", SightingStatus.LINKED.name)
-                                
-                                // 🚨 补充逻辑漏洞：不仅要改线索状态，还需要将该线索 ID 写入主案件的 linkedSightingIds 中，同时更新主案件状态
-                                if (note.relatedMissingPersonId.isNotEmpty()) {
-                                    db.collection("MissingPersons").document(note.relatedMissingPersonId).update(
-                                        "status", MPStatus.PENDING_VERIFICATION.name,
-                                        "linkedSightingIds", FieldValue.arrayUnion(note.relatedSightingId)
-                                    )
-                                }
+                                try {
+                                    val db = FirebaseFirestore.getInstance()
+                                    db.collection("Sightings").document(note.relatedSightingId).update("status", SightingStatus.LINKED.name)
+                                    
+                                    if (note.relatedMissingPersonId.isNotEmpty()) {
+                                        db.collection("MissingPersons").document(note.relatedMissingPersonId).update(
+                                            "status", MPStatus.PENDING_VERIFICATION.name,
+                                            "linkedSightingIds", FieldValue.arrayUnion(note.relatedSightingId)
+                                        )
+                                    }
 
-                                // 2. 发送感谢信给路人
-                                val thanksRef = db.collection("Notifications").document()
-                                thanksRef.set(NotificationRecord(
-                                    id = thanksRef.id, receiverId = note.senderId, senderId = currentUserId,
-                                    title = "🙏 Thank You!", message = "The family has confirmed your sighting. Thank you for your help!",
-                                    type = "THANK_YOU"
-                                ))
-                                // 3. 斩断权限
-                                db.collection("Notifications").document(note.id).update("type", "MATCH_CONFIRMED")
+                                    val thanksRef = db.collection("Notifications").document()
+                                    thanksRef.set(NotificationRecord(
+                                        id = thanksRef.id, receiverId = note.senderId, senderId = currentUserId,
+                                        title = "🙏 Thank You!", message = "The family has confirmed your sighting. Thank you for your help!",
+                                        type = "THANK_YOU"
+                                    ))
+                                    db.collection("Notifications").document(note.id).update("type", "MATCH_CONFIRMED")
 
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, "Sighting Confirmed!", Toast.LENGTH_SHORT).show()
-                                    selectedNote = null
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, "Sighting Confirmed!", Toast.LENGTH_SHORT).show()
+                                        selectedNote = null
+                                    }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
                                 }
                             }
-                        }) { Text("Yes, this is them") }
+                        }) { Text("Yes") }
                     },
                     dismissButton = {
                         OutlinedButton(onClick = {
                             scope.launch(Dispatchers.IO) {
-                                val db = FirebaseFirestore.getInstance()
-                                // 线索标为无效
-                                db.collection("Sightings").document(note.relatedSightingId).update("status", SightingStatus.REJECTED.name)
-                                // 斩断权限
-                                db.collection("Notifications").document(note.id).update("type", "MATCH_REJECTED")
-
-                                withContext(Dispatchers.Main) { selectedNote = null }
+                                try {
+                                    val db = FirebaseFirestore.getInstance()
+                                    db.collection("Sightings").document(note.relatedSightingId).update("status", SightingStatus.REJECTED.name)
+                                    
+                                    if (note.relatedMissingPersonId.isNotEmpty()) {
+                                        val mpRef = db.collection("MissingPersons").document(note.relatedMissingPersonId)
+                                        db.runTransaction { transaction ->
+                                            val mp = transaction.get(mpRef).toObject(MissingPerson::class.java)
+                                            if (mp != null) {
+                                                val newList = mp.linkedSightingIds.filter { it != note.relatedSightingId }
+                                                transaction.update(mpRef, "linkedSightingIds", newList)
+                                                if (newList.isEmpty()) {
+                                                    transaction.update(mpRef, "status", MPStatus.ACTIVE.name)
+                                                }
+                                            }
+                                        }.await()
+                                    }
+                                    db.collection("Notifications").document(note.id).update("type", "MATCH_REJECTED")
+                                    withContext(Dispatchers.Main) { selectedNote = null }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
+                                }
                             }
-                        }) { Text("No, not them") }
+                        }) { Text("No") }
                     }
                 )
             }
             "MATCH_CONFIRMED" -> {
                 AlertDialog(
                     onDismissRequest = { selectedNote = null },
-                    title = { Text("Already Verified ✅") },
-                    text = { Text("You have already confirmed this sighting. The case is now linked.") },
+                    title = { Text("Verified ✅") },
+                    text = { Text("This sighting has been confirmed.") },
                     confirmButton = { Button(onClick = { selectedNote = null }) { Text("OK") } }
                 )
             }
             "MATCH_REJECTED" -> {
                 AlertDialog(
                     onDismissRequest = { selectedNote = null },
-                    title = { Text("Already Rejected ❌") },
-                    text = { Text("You previously marked this sighting as incorrect.") },
+                    title = { Text("Rejected ❌") },
+                    text = { Text("You marked this sighting as incorrect.") },
                     confirmButton = { Button(onClick = { selectedNote = null }) { Text("OK") } }
                 )
             }
@@ -217,9 +231,7 @@ fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) 
             items(myPersons) { person ->
                 MyRecordCard(person.name, person.status, person.photoBase64) { selectedMP = person }
             }
-
             item { Spacer(modifier = Modifier.height(16.dp)) }
-
             item { Text("🔍 My Sighting Contributions", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary) }
             if (mySightings.isEmpty()) item { Text("No clues submitted yet.", style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
             items(mySightings) { sighting ->
@@ -232,9 +244,11 @@ fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) 
         AlertDialog(
             onDismissRequest = { selectedMP = null },
             title = { Text("Manage Case: ${mp.name}") },
-            text = { Text("Current Status: ${mp.status}\n\nWhat would you like to do?") },
-            confirmButton = {
-                Column(horizontalAlignment = Alignment.End, modifier = Modifier.fillMaxWidth()) {
+            text = { 
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("Current Status: ${mp.status}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(24.dp))
+                    
                     Button(
                         onClick = {
                             selectedMP = null
@@ -242,26 +256,57 @@ fun MyRecordsTab(currentUserId: String, onNavigateToTimeline: (String) -> Unit) 
                         },
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                    ) { Text("📍 View Case Tracker") }
-
-                    Spacer(modifier = Modifier.height(8.dp))
+                    ) {
+                        Icon(Icons.Default.LocationOn, null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("View Case Tracker")
+                    }
 
                     if (mp.status != MPStatus.FOUND.name && mp.status != MPStatus.CANCELLED.name) {
-                        Button(onClick = {
-                            // 💡 补充逻辑漏洞：原代码这里是空的。现在补充将主案件标记为 "FOUND" (已结案) 的操作
-                            FirebaseFirestore.getInstance().collection("MissingPersons").document(mp.id).update("status", MPStatus.FOUND.name)
-                            selectedMP = null
-                        }, modifier = Modifier.fillMaxWidth()) { Text("Mark as FOUND ✅") }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        val db = FirebaseFirestore.getInstance()
+                                        val batch = db.batch()
+                                        batch.update(db.collection("MissingPersons").document(mp.id), "status", MPStatus.FOUND.name)
+                                        mp.linkedSightingIds.forEach { sightingId ->
+                                            batch.update(db.collection("Sightings").document(sightingId), "status", SightingStatus.RESOLVED.name)
+                                        }
+                                        batch.commit().await()
+                                        withContext(Dispatchers.Main) { selectedMP = null }
+                                    } catch (e: Exception) {
+                                        withContext(Dispatchers.Main) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
+                                    }
+                                }
+                            }, 
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
+                        ) {
+                            Icon(Icons.Default.Check, null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Mark as FOUND ✅")
+                        }
+                    }
+
+                    if (mp.status == MPStatus.ACTIVE.name) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = {
+                                FirebaseFirestore.getInstance().collection("MissingPersons").document(mp.id).update("status", MPStatus.CANCELLED.name)
+                                selectedMP = null
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red)
+                        ) {
+                            Text("Cancel Report ⚪")
+                        }
                     }
                 }
             },
-            dismissButton = {
-                if (mp.status == MPStatus.ACTIVE.name) {
-                    OutlinedButton(onClick = {
-                        FirebaseFirestore.getInstance().collection("MissingPersons").document(mp.id).update("status", MPStatus.CANCELLED.name)
-                        selectedMP = null
-                    }) { Text("Cancel Report ⚪") }
-                }
+            confirmButton = {
+                TextButton(onClick = { selectedMP = null }) { Text("Close") }
             }
         )
     }
@@ -298,7 +343,7 @@ fun NotificationCard(note: NotificationRecord, onClick: () -> Unit) {
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            val bitmap = remember(note.photoBase64) { decodeBase64ToBitmap(note.photoBase64) }
+            val bitmap = remember(note.photoBase64) { decodeBase64ToBitmapInternal(note.photoBase64) }
             if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.size(60.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
             else Box(modifier = Modifier.size(60.dp).clip(RoundedCornerShape(8.dp)).background(Color.LightGray))
 
@@ -308,7 +353,6 @@ fun NotificationCard(note: NotificationRecord, onClick: () -> Unit) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(note.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            // 💡 点击后 note.isRead 会被改为 true，这里的红色圆点会消失
             if (!note.isRead) Box(modifier = Modifier.size(10.dp).clip(RoundedCornerShape(50)).background(Color.Red))
         }
     }
@@ -318,7 +362,7 @@ fun NotificationCard(note: NotificationRecord, onClick: () -> Unit) {
 fun MyRecordCard(title: String, status: String, base64Image: String, onClick: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth().clickable { onClick() }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            val bitmap = remember(base64Image) { decodeBase64ToBitmap(base64Image) }
+            val bitmap = remember(base64Image) { decodeBase64ToBitmapInternal(base64Image) }
             if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.size(50.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
             else Box(modifier = Modifier.size(50.dp).clip(RoundedCornerShape(8.dp)).background(Color.LightGray))
 
@@ -328,5 +372,15 @@ fun MyRecordCard(title: String, status: String, base64Image: String, onClick: ()
                 Text("Status: $status", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
         }
+    }
+}
+
+private fun decodeBase64ToBitmapInternal(base64Str: String): Bitmap? {
+    if (base64Str.isBlank()) return null
+    return try {
+        val decodedBytes = Base64.decode(base64Str, Base64.DEFAULT)
+        BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+    } catch (e: Exception) {
+        null
     }
 }
