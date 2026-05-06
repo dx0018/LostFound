@@ -1,8 +1,5 @@
 package com.example.lostfound
 
-import android.graphics.BitmapFactory
-import android.util.Base64
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,31 +16,31 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
 import java.util.*
 
-// 💡 架构基石：时间线事件包装器 (Polymorphic wrapper)
+// 💡 时间线事件包装器 (Polymorphic wrapper)
 sealed class TimelineEvent {
     abstract val timestamp: Long
     abstract val location: String
-    abstract val photoBase64: String
+    abstract val photoUrl: String   // 🆕 改为 photoUrl
 
     data class CaseOpened(val person: MissingPerson) : TimelineEvent() {
         override val timestamp = person.timestamp
         override val location = person.lastSeenLocation
-        override val photoBase64 = person.photoBase64
+        override val photoUrl = person.photoUrl
     }
 
     data class SightingConfirmed(val sighting: SightingRecord) : TimelineEvent() {
         override val timestamp = sighting.timestamp
         override val location = sighting.location
-        override val photoBase64 = sighting.photoBase64
+        override val photoUrl = sighting.photoUrl
     }
 }
 
@@ -54,19 +51,16 @@ fun CaseTimelineScreen(missingPersonId: String, onNavigateBack: () -> Unit) {
     var timelineEvents by remember { mutableStateOf<List<TimelineEvent>>(emptyList()) }
     var personName by remember { mutableStateOf("Loading Case...") }
 
-    // 💡 异步获取并合并数据
     LaunchedEffect(missingPersonId) {
         try {
             val db = FirebaseFirestore.getInstance()
 
-            // 1. 获取源案件 (MissingPerson)
             val mpSnapshot = db.collection("MissingPersons").document(missingPersonId).get().await()
             val mp = mpSnapshot.toObject(MissingPerson::class.java)
 
             if (mp != null) {
                 personName = mp.name
 
-                // 2. 🚨 规避 whereIn 限制：反向查询所有关联此案件且被确认的 Sightings
                 val sightingsSnapshot = db.collection("Sightings")
                     .whereEqualTo("linkedMissingPersonId", missingPersonId)
                     .whereIn("status", listOf(SightingStatus.LINKED.name, SightingStatus.RESOLVED.name))
@@ -74,7 +68,6 @@ fun CaseTimelineScreen(missingPersonId: String, onNavigateBack: () -> Unit) {
 
                 val sightings = sightingsSnapshot.toObjects(SightingRecord::class.java)
 
-                // 3. 聚合并按时间顺序排列 (最早的在上面)
                 val combinedList = mutableListOf<TimelineEvent>()
                 combinedList.add(TimelineEvent.CaseOpened(mp))
                 sightings.forEach { combinedList.add(TimelineEvent.SightingConfirmed(it)) }
@@ -112,7 +105,7 @@ fun CaseTimelineScreen(missingPersonId: String, onNavigateBack: () -> Unit) {
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(paddingValues).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(0.dp) 
+                verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
                 itemsIndexed(timelineEvents) { index, event ->
                     val isLastItem = index == timelineEvents.lastIndex
@@ -136,12 +129,12 @@ fun TimelineNode(event: TimelineEvent, isLast: Boolean) {
             .drawBehind {
                 if (!isLast) {
                     val strokeWidth = 2.dp.toPx()
-                    val xOffset = 20.dp.toPx() 
-                    val yOffset = 24.dp.toPx() 
+                    val xOffset = 20.dp.toPx()
+                    val yOffset = 24.dp.toPx()
                     drawLine(
                         color = Color.LightGray,
                         start = Offset(xOffset, yOffset),
-                        end = Offset(xOffset, size.height), 
+                        end = Offset(xOffset, size.height),
                         strokeWidth = strokeWidth
                     )
                 }
@@ -183,22 +176,11 @@ fun TimelineNode(event: TimelineEvent, isLast: Boolean) {
                     Text(text = "Location: ${event.location}", style = MaterialTheme.typography.bodyMedium)
 
                     Spacer(modifier = Modifier.height(8.dp))
-                    
-                    // 💡 修复：将解码逻辑移出 try-catch 块，放在 remember 中
-                    val imageBitmap = remember(event.photoBase64) {
-                        try {
-                            if (event.photoBase64.isNotEmpty()) {
-                                val imageBytes = Base64.decode(event.photoBase64, Base64.DEFAULT)
-                                BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)?.asImageBitmap()
-                            } else null
-                        } catch (e: Exception) {
-                            null
-                        }
-                    }
 
-                    if (imageBitmap != null) {
-                        Image(
-                            bitmap = imageBitmap,
+                    // 🆕 Coil 异步加载 URL
+                    if (event.photoUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = event.photoUrl,
                             contentDescription = null,
                             modifier = Modifier
                                 .fillMaxWidth()

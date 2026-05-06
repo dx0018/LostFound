@@ -2,13 +2,10 @@ package com.example.lostfound
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.location.Geocoder
-import android.util.Base64
 import android.widget.Toast
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -31,7 +28,6 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -43,6 +39,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.BitmapDescriptor
 import com.google.android.gms.maps.model.CameraPosition
@@ -74,7 +72,7 @@ data class MapMarkerInfo(
     val latLng: LatLng,
     val title: String,
     val isMissingPerson: Boolean,
-    val photoBase64: String = "",
+    val photoUrl: String = "",     // 🆕 改为 URL
     val age: String = "",
     val gender: String = "",
     val status: String = "",
@@ -90,8 +88,6 @@ private val ColorMissing  = Color(0xFFE53935)
 private val ColorSighting = Color(0xFF1E88E5)
 private val ColorPending  = Color(0xFFFFA000)
 
-// 低于此 zoom 级别时,地图上的 marker 只显示纯色圆点;
-// 高于此 zoom 时显示带头像的 marker。可按产品需求调整。
 private const val ZOOM_THRESHOLD = 9f
 
 // ============================================================
@@ -114,12 +110,10 @@ fun HomeScreen(
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
 
-    // --- Firestore state ---
     var personList    by remember { mutableStateOf<List<MissingPerson>>(emptyList()) }
     var sightingList  by remember { mutableStateOf<List<SightingRecord>>(emptyList()) }
     var isLoading     by remember { mutableStateOf(true) }
 
-    // --- UI state ---
     var searchQuery      by remember { mutableStateOf("") }
     var mapMarkers       by remember { mutableStateOf<List<MapMarkerInfo>>(emptyList()) }
     var hasCenteredMap   by remember { mutableStateOf(false) }
@@ -131,12 +125,10 @@ fun HomeScreen(
         position = CameraPosition.fromLatLngZoom(LatLng(3.1390, 101.6869), 6f)
     }
 
-    // --- Zoom 监听:只有跨过阈值时才触发实际重组 ---
     val showPhotoMarkers by remember {
         derivedStateOf { cameraPositionState.position.zoom >= ZOOM_THRESHOLD }
     }
 
-    // --- Firestore listeners ---
     DisposableEffect(Unit) {
         val db = FirebaseFirestore.getInstance()
         val personListener = db.collection("MissingPersons")
@@ -158,7 +150,6 @@ fun HomeScreen(
         }
     }
 
-    // --- Combined, filtered feed ---
     val combinedFeed = remember(personList, sightingList, searchQuery) {
         val all = (personList.map { FeedItem.PersonItem(it) } +
                 sightingList.map { FeedItem.SightingItem(it) })
@@ -177,7 +168,6 @@ fun HomeScreen(
         }
     }
 
-    // --- Build map markers ---
     LaunchedEffect(combinedFeed) {
         val markers = mutableListOf<MapMarkerInfo>()
         for (item in combinedFeed) {
@@ -203,7 +193,7 @@ fun HomeScreen(
                     is FeedItem.PersonItem -> MapMarkerInfo(
                         id = item.person.id, latLng = latLng,
                         title = item.person.name, isMissingPerson = true,
-                        photoBase64 = item.person.photoBase64,
+                        photoUrl = item.person.photoUrl,    // 🆕
                         age = item.person.age, gender = item.person.gender,
                         status = item.person.status,
                         date = item.person.lastSeenDate,
@@ -212,7 +202,7 @@ fun HomeScreen(
                     is FeedItem.SightingItem -> MapMarkerInfo(
                         id = item.sighting.id, latLng = latLng,
                         title = "Unverified Sighting", isMissingPerson = false,
-                        photoBase64 = item.sighting.photoBase64,
+                        photoUrl = item.sighting.photoUrl,  // 🆕
                         status = "PENDING",
                         date = item.sighting.sightingDate,
                         locationName = item.sighting.location
@@ -223,28 +213,46 @@ fun HomeScreen(
         mapMarkers = markers
     }
 
-    // --- Pre-generate marker icons(头像版 + 纯色点版)---
+    // 🆕 头像 marker 异步从 URL 下载（Coil + 生成 BitmapDescriptor）
     LaunchedEffect(mapMarkers) {
-        withContext(Dispatchers.Default) {
-            // 纯色点 —— 只需两个
-            if (!markerIconCache.containsKey("DOT_M"))
-                markerIconCache["DOT_M"] = MapMarkerUtils.buildDotMarker(MapMarkerUtils.COLOR_MISSING)
-            if (!markerIconCache.containsKey("DOT_S"))
-                markerIconCache["DOT_S"] = MapMarkerUtils.buildDotMarker(MapMarkerUtils.COLOR_SIGHTING)
+        if (!markerIconCache.containsKey("DOT_M")) {
+            markerIconCache["DOT_M"] =
+                MapMarkerUtils.buildDotMarker(MapMarkerUtils.COLOR_MISSING)
+        }
+        if (!markerIconCache.containsKey("DOT_S")) {
+            markerIconCache["DOT_S"] =
+                MapMarkerUtils.buildDotMarker(MapMarkerUtils.COLOR_SIGHTING)
+        }
 
-            // 头像版 —— 每个 marker 一个,key 用 id + photo 哈希保证唯一
-            for (marker in mapMarkers) {
-                val photoKey = "PHOTO__"
-                if (!markerIconCache.containsKey(photoKey)) {
-                    val color = if (marker.isMissingPerson) MapMarkerUtils.COLOR_MISSING
-                    else MapMarkerUtils.COLOR_SIGHTING
-                    markerIconCache[photoKey] = MapMarkerUtils.buildMarker(marker.photoBase64, color)
+        for (marker in mapMarkers) {
+            val photoKey = "PHOTO_${marker.id}"
+
+            if (!markerIconCache.containsKey(photoKey) && marker.photoUrl.isNotBlank()) {
+                launch(Dispatchers.IO) {
+                    val bitmap = MapMarkerUtils.downloadBitmapFromUrl(context, marker.photoUrl)
+                    val color = if (marker.isMissingPerson) {
+                        MapMarkerUtils.COLOR_MISSING
+                    } else {
+                        MapMarkerUtils.COLOR_SIGHTING
+                    }
+                    val descriptor = MapMarkerUtils.buildMarkerFromBitmap(bitmap, color)
+
+                    withContext(Dispatchers.Main) {
+                        markerIconCache[photoKey] = descriptor
+                    }
                 }
             }
         }
+
+        val validKeys = mapMarkers.mapNotNull { marker ->
+            if (marker.photoUrl.isNotBlank()) "PHOTO_${marker.id}" else null
+        }.toSet() + setOf("DOT_M", "DOT_S")
+
+        val toRemove = markerIconCache.keys - validKeys
+        toRemove.forEach { markerIconCache.remove(it) }
     }
 
-    // --- Auto-center camera once ---
+
     LaunchedEffect(mapMarkers) {
         if (mapMarkers.isNotEmpty() && !hasCenteredMap) {
             cameraPositionState.animate(
@@ -294,12 +302,8 @@ fun HomeScreen(
         }
     }
 
-    // ----------------------------------------------------------------
-    // Layout
-    // ----------------------------------------------------------------
     Box(modifier = Modifier.fillMaxSize()) {
 
-        // ---- Map ----
         GoogleMap(
             modifier            = Modifier.fillMaxSize(),
             cameraPositionState = cameraPositionState,
@@ -309,16 +313,22 @@ fun HomeScreen(
             )
         ) {
             mapMarkers.forEach { marker ->
-                val iconKey = if (showPhotoMarkers) {
-                    "PHOTO__"
+                val iconKey = if (showPhotoMarkers && marker.photoUrl.isNotBlank()) {
+                    "PHOTO_${marker.id}"
                 } else {
                     if (marker.isMissingPerson) "DOT_M" else "DOT_S"
                 }
-                val icon = markerIconCache[iconKey]
 
-                // 头像 marker 的 anchor 在底部尖角,纯色点在中心
-                val anchor = if (showPhotoMarkers) Offset(0.5f, 1.0f)
-                else Offset(0.5f, 0.5f)
+                val icon = markerIconCache[iconKey]
+                    ?: markerIconCache[if (marker.isMissingPerson) "DOT_M" else "DOT_S"]
+
+                val anchor =
+                    if (showPhotoMarkers && markerIconCache.containsKey("PHOTO_${marker.id}")) {
+                        Offset(0.5f, 1.0f)
+                    } else {
+                        Offset(0.5f, 0.5f)
+                    }
+
 
                 MarkerInfoWindowContent(
                     state  = MarkerState(position = marker.latLng),
@@ -333,7 +343,6 @@ fun HomeScreen(
             }
         }
 
-        // ---- Top scrim ----
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -343,14 +352,12 @@ fun HomeScreen(
                 )
         )
 
-        // ---- Top bar ----
         HomeTopBar(
             searchQuery    = searchQuery,
             onSearchChange = { searchQuery = it },
             onProfileClick = onNavigateToProfile
         )
 
-        // ---- Three-stage bottom sheet ----
         val sheetOffsetDp = with(density) { sheetAnim.value.toDp() }
 
         Surface(
@@ -359,108 +366,105 @@ fun HomeScreen(
                 .fillMaxHeight()
                 .offset(y = sheetOffsetDp)
                 .padding(bottom = bottomBarHeight),
-                shape           = RoundedCornerShape(topStart = 15.dp, topEnd = 15.dp),
-                shadowElevation = 16.dp,
-                color           = MaterialTheme.colorScheme.surface
+            shape           = RoundedCornerShape(topStart = 15.dp, topEnd = 15.dp),
+            shadowElevation = 16.dp,
+            color           = MaterialTheme.colorScheme.surface
         ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
 
-            // ---- Drag handle + header ----
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .pointerInput(Unit) {
-                        detectVerticalDragGestures(
-                            onVerticalDrag = { _, dragAmount ->
-                                scope.launch {
-                                    val newVal = (sheetAnim.value + dragAmount)
-                                        .coerceIn(fullOffset, peekOffset)
-                                    sheetAnim.snapTo(newVal)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pointerInput(Unit) {
+                            detectVerticalDragGestures(
+                                onVerticalDrag = { _, dragAmount ->
+                                    scope.launch {
+                                        val newVal = (sheetAnim.value + dragAmount)
+                                            .coerceIn(fullOffset, peekOffset)
+                                        sheetAnim.snapTo(newVal)
+                                    }
+                                },
+                                onDragEnd = {
+                                    val current = sheetAnim.value
+                                    val nearest = listOf(
+                                        SheetStage.Peek to peekOffset,
+                                        SheetStage.Half to halfOffset,
+                                        SheetStage.Full to fullOffset
+                                    ).minByOrNull { abs(it.second - current) }
+                                        ?.first ?: SheetStage.Half
+                                    scope.launch { snapToStage(nearest) }
                                 }
-                            },
-                            onDragEnd = {
-                                val current = sheetAnim.value
-                                val nearest = listOf(
-                                    SheetStage.Peek to peekOffset,
-                                    SheetStage.Half to halfOffset,
-                                    SheetStage.Full to fullOffset
-                                ).minByOrNull { abs(it.second - current) }
-                                    ?.first ?: SheetStage.Half
-                                scope.launch { snapToStage(nearest) }
-                            }
-                        )
-                    }
-                    .clickable { cycleStage() }
-                    .padding(vertical = 10.dp)
-            ) {
-                Column(
-                    modifier            = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                            )
+                        }
+                        .clickable { cycleStage() }
+                        .padding(vertical = 10.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .width(40.dp)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(Color(0xFFBDBDBD))
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "Nearby Alerts",
-                            style      = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color      = MaterialTheme.colorScheme.onSurface
+                    Column(
+                        modifier            = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(40.dp)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(Color(0xFFBDBDBD))
                         )
-                        Spacer(Modifier.width(8.dp))
-                        if (combinedFeed.isNotEmpty()) {
-                            Surface(
-                                color = ColorMissing,
-                                shape = RoundedCornerShape(50.dp)
-                            ) {
-                                Text(
-                                    combinedFeed.size.toString(),
-                                    color      = Color.White,
-                                    modifier   = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                    style      = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Nearby Alerts",
+                                style      = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color      = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            if (combinedFeed.isNotEmpty()) {
+                                Surface(
+                                    color = ColorMissing,
+                                    shape = RoundedCornerShape(50.dp)
+                                ) {
+                                    Text(
+                                        combinedFeed.size.toString(),
+                                        color      = Color.White,
+                                        modifier   = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                        style      = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
-                        }
 
-                        Spacer(Modifier.width(8.dp))
-                        val hint = when (currentStage) {
-                            SheetStage.Peek -> "Tap to expand"
-                            SheetStage.Half -> "Tap for full view"
-                            SheetStage.Full -> "Tap to collapse"
+                            Spacer(Modifier.width(8.dp))
+                            val hint = when (currentStage) {
+                                SheetStage.Peek -> "Tap to expand"
+                                SheetStage.Half -> "Tap for full view"
+                                SheetStage.Full -> "Tap to collapse"
+                            }
+                            Text(
+                                "· $hint",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
                         }
-                        Text(
-                            "· $hint",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.Gray
-                        )
                     }
                 }
-            }
 
-            // ---- Sheet body ----
-            SheetBody(
-                isLoading            = isLoading,
-                combinedFeed         = combinedFeed,
-                onNavigateToTimeline = onNavigateToTimeline
-            )
+                SheetBody(
+                    isLoading            = isLoading,
+                    combinedFeed         = combinedFeed,
+                    onNavigateToTimeline = onNavigateToTimeline
+                )
+            }
         }
     }
-    }
 
-    // Sighting detail dialog
     selectedSighting?.let { sighting ->
         SightingDetailDialog(sighting = sighting, onDismiss = { selectedSighting = null })
     }
 }
 
 // ============================================================
-// Top bar — Profile FAB (left) + floating Search bar (centre)
+// Top bar
 // ============================================================
 
 @Composable
@@ -598,18 +602,16 @@ private fun SightingDetailDialog(
             elevation = CardDefaults.cardElevation(16.dp)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
-                val bitmap = remember(sighting.photoBase64) {
-                    decodeBase64ToBitmap(sighting.photoBase64)
-                }
-                if (bitmap != null) {
-                    Image(
-                        bitmap             = bitmap.asImageBitmap(),
+                if (sighting.photoUrl.isNotBlank()) {
+                    // 🆕 Coil 异步加载
+                    AsyncImage(
+                        model = sighting.photoUrl,
                         contentDescription = null,
-                        modifier           = Modifier
+                        modifier = Modifier
                             .fillMaxWidth()
                             .height(220.dp)
                             .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)),
-                        contentScale       = ContentScale.Crop
+                        contentScale = ContentScale.Crop
                     )
                 } else {
                     Box(
@@ -711,16 +713,15 @@ fun MapInfoWindowContent(marker: MapMarkerInfo) {
         elevation = CardDefaults.cardElevation(8.dp)
     ) {
         Column {
-            val bitmap = remember(marker.photoBase64) { decodeBase64ToBitmap(marker.photoBase64) }
-            if (bitmap != null) {
-                Image(
-                    bitmap             = bitmap.asImageBitmap(),
+            if (marker.photoUrl.isNotBlank()) {
+                AsyncImage(
+                    model = marker.photoUrl,
                     contentDescription = null,
-                    modifier           = Modifier
+                    modifier = Modifier
                         .fillMaxWidth()
                         .height(110.dp)
                         .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
-                    contentScale       = ContentScale.Crop
+                    contentScale = ContentScale.Crop
                 )
             } else {
                 Box(
@@ -815,19 +816,18 @@ fun MissingPersonCard(person: MissingPerson, onClick: () -> Unit) {
             modifier          = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val bitmap = remember(person.photoBase64) { decodeBase64ToBitmap(person.photoBase64) }
             Box(
                 modifier         = Modifier
                     .size(88.dp)
                     .clip(RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                if (bitmap != null) {
-                    Image(
-                        bitmap             = bitmap.asImageBitmap(),
+                if (person.photoUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = person.photoUrl,
                         contentDescription = null,
-                        modifier           = Modifier.fillMaxSize(),
-                        contentScale       = ContentScale.Crop
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
                     )
                 } else {
                     Box(
@@ -963,19 +963,18 @@ fun SightingCard(sighting: SightingRecord) {
             modifier          = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val bitmap = remember(sighting.photoBase64) { decodeBase64ToBitmap(sighting.photoBase64) }
             Box(
                 modifier         = Modifier
                     .size(88.dp)
                     .clip(RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                if (bitmap != null) {
-                    Image(
-                        bitmap             = bitmap.asImageBitmap(),
+                if (sighting.photoUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = sighting.photoUrl,
                         contentDescription = null,
-                        modifier           = Modifier.fillMaxSize(),
-                        contentScale       = ContentScale.Crop
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
                     )
                 } else {
                     Box(
@@ -1074,7 +1073,6 @@ suspend fun getLatLngFromAddress(
 ): LatLng? = withContext(Dispatchers.IO) {
     if (address.isBlank()) return@withContext null
 
-    // 直接支持 "lat,lng" 格式
     val regex = Regex("""(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)""")
     val match = regex.find(address)
     if (match != null) {
@@ -1098,15 +1096,4 @@ suspend fun getLatLngFromAddress(
         e.printStackTrace()
     }
     null
-}
-
-fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
-    if (base64Str.isBlank()) return null
-    return try {
-        val bytes = Base64.decode(base64Str, Base64.DEFAULT)
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-    } catch (e: Exception) {
-        e.printStackTrace()
-        null
-    }
 }

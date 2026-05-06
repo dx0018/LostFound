@@ -1,7 +1,7 @@
 package com.example.lostfound
 
+import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.BitmapShader
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
@@ -10,29 +10,49 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Shader
-import android.util.Base64
 import androidx.core.graphics.applyCanvas
+import coil.ImageLoader
+import coil.request.ImageRequest
+import coil.request.SuccessResult
 import com.google.android.gms.maps.model.BitmapDescriptor
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 
 object MapMarkerUtils {
 
-    // ---- Colors ----
     val COLOR_MISSING  = Color.parseColor("#E53935")
     val COLOR_SIGHTING = Color.parseColor("#1E88E5")
 
-    // ---- Sizes (in pixels) ----
-    private const val MARKER_SIZE  = 200      // 头像 marker 整体宽度
-    private const val PHOTO_SIZE   = 160      // 圆形头像直径
-    private const val BORDER_WIDTH = 5f       // 外圈粗细
-    private const val TAIL_HEIGHT  = 22       // 底部尖角高度
-    private const val DOT_SIZE     = 44       // 纯色圆点 marker 尺寸
+    private const val MARKER_SIZE  = 200
+    private const val PHOTO_SIZE   = 160
+    private const val BORDER_WIDTH = 5f
+    private const val TAIL_HEIGHT  = 22
+    private const val DOT_SIZE     = 44
 
     /**
-     * 带头像的 marker —— 高 zoom 级别使用。
-     * 使用 center-crop,人脸不会被压缩变形。
+     * 🆕 从 URL 异步下载图片为 Bitmap（用 Coil 复用磁盘缓存）
      */
-    fun buildMarker(photoBase64: String, ringColor: Int): BitmapDescriptor {
+    suspend fun downloadBitmapFromUrl(context: Context, url: String): Bitmap? {
+        if (url.isBlank()) return null
+        return try {
+            val loader = ImageLoader(context)
+            val request = ImageRequest.Builder(context)
+                .data(url)
+                .allowHardware(false) // BitmapShader 不支持 HARDWARE bitmap，必须关掉
+                .build()
+            val result = loader.execute(request)
+            if (result is SuccessResult) {
+                (result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+            } else null
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    /**
+     * 🆕 从 Bitmap 直接生成头像 marker（不再走 Base64 解码）
+     */
+    fun buildMarkerFromBitmap(avatar: Bitmap?, ringColor: Int): BitmapDescriptor {
         val totalW = MARKER_SIZE
         val totalH = MARKER_SIZE + TAIL_HEIGHT
 
@@ -49,7 +69,7 @@ object MapMarkerUtils {
             }
             drawCircle(cx, cy + 4f, ringRadius, shadowPaint)
 
-            // 2. 外圈(颜色环)
+            // 2. 外圈
             val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = ringColor
                 style = Paint.Style.FILL
@@ -72,8 +92,7 @@ object MapMarkerUtils {
             }
             drawCircle(cx, cy, PHOTO_SIZE / 2f + 2f, whitePaint)
 
-            // 5. 头像(center-crop 到圆形)
-            val avatar = decodePhoto(photoBase64)
+            // 5. 头像
             if (avatar != null) {
                 val cropped = centerCropToSquare(avatar, PHOTO_SIZE)
                 val avatarPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -90,7 +109,6 @@ object MapMarkerUtils {
                 }
                 drawCircle(cx, cy, PHOTO_SIZE / 2f, avatarPaint)
             } else {
-                // 无照片时的占位
                 val placeholderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = Color.argb(40, 0, 0, 0)
                 }
@@ -102,7 +120,7 @@ object MapMarkerUtils {
     }
 
     /**
-     * 纯色圆点 marker —— 低 zoom 级别使用。
+     * 纯色圆点 marker —— 低 zoom 级别使用
      */
     fun buildDotMarker(color: Int): BitmapDescriptor {
         val size = DOT_SIZE
@@ -111,20 +129,17 @@ object MapMarkerUtils {
             val cx = size / 2f
             val cy = size / 2f
 
-            // 阴影
             val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.color = Color.argb(80, 0, 0, 0)
                 maskFilter = BlurMaskFilter(4f, BlurMaskFilter.Blur.NORMAL)
             }
             drawCircle(cx, cy + 2f, size / 2f - 4f, shadowPaint)
 
-            // 白色外圈
             val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.color = Color.WHITE
             }
             drawCircle(cx, cy, size / 2f - 3f, whitePaint)
 
-            // 内部彩色
             val colorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.color = color
             }
@@ -133,22 +148,6 @@ object MapMarkerUtils {
         return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
-    // -------- Helpers --------
-
-    private fun decodePhoto(base64Str: String): Bitmap? {
-        if (base64Str.isBlank()) return null
-        return try {
-            val bytes = Base64.decode(base64Str, Base64.DEFAULT)
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Center-crop:以较短边裁出正方形,再缩放到目标尺寸。
-     * 确保人脸比例正确,不被拉伸。
-     */
     private fun centerCropToSquare(src: Bitmap, targetSize: Int): Bitmap {
         val shortSide = minOf(src.width, src.height)
         val x = (src.width  - shortSide) / 2

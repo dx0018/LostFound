@@ -2,121 +2,265 @@ package com.example.lostfound
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
+import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
+import kotlin.math.min
 import kotlin.math.sqrt
 
-class MobileFaceNetExtractor(context: Context, modelName: String = "MobileFaceNet.tflite") {
+class MobileFaceNetExtractor(
+    context: Context,
+    modelName: String = "MobileFaceNet.tflite"
+) {
 
     private var interpreter: Interpreter
-    private val inputSize = 112
-    private val outputSize = 192 // 从之前的 Logcat 确认的输出维度
+
+    private var inputBatch = 1
+    private var inputHeight = 112
+    private var inputWidth = 112
+    private var inputChannels = 3
+
+    private var outputBatch = 1
+    private var outputSize = 192
 
     init {
-        // 提取器不需要太多的线程，2 个足够
-        val options = Interpreter.Options().apply { numThreads = 2 }
+        val options = Interpreter.Options().apply {
+            numThreads = 2
+        }
+
         interpreter = Interpreter(loadModelFile(context, modelName), options)
+
+        val inputTensor = interpreter.getInputTensor(0)
+        val inputShape = inputTensor.shape()
+        val inputType = inputTensor.dataType()
+
+        val outputTensor = interpreter.getOutputTensor(0)
+        val outputShape = outputTensor.shape()
+        val outputType = outputTensor.dataType()
+
+        Log.d(
+            "MobileFaceNet",
+            "Input tensor shape=${inputShape.contentToString()}, type=$inputType"
+        )
+        Log.d(
+            "MobileFaceNet",
+            "Output tensor shape=${outputShape.contentToString()}, type=$outputType"
+        )
+
+        if (inputType != DataType.FLOAT32) {
+            throw IllegalStateException(
+                "MobileFaceNetExtractor currently expects FLOAT32 input, but model input is $inputType"
+            )
+        }
+
+        if (inputShape.size != 4) {
+            throw IllegalStateException(
+                "Unsupported input shape: ${inputShape.contentToString()}. Expected [batch, height, width, channels]."
+            )
+        }
+
+        inputBatch = inputShape[0]
+        inputHeight = inputShape[1]
+        inputWidth = inputShape[2]
+        inputChannels = inputShape[3]
+
+        if (inputBatch <= 0) inputBatch = 1
+
+        if (inputHeight <= 0 || inputWidth <= 0 || inputChannels <= 0) {
+            throw IllegalStateException(
+                "Invalid input shape: ${inputShape.contentToString()}"
+            )
+        }
+
+        if (inputChannels != 3) {
+            throw IllegalStateException(
+                "Unsupported channel count: $inputChannels. Expected 3 RGB channels."
+            )
+        }
+
+        if (outputType != DataType.FLOAT32) {
+            throw IllegalStateException(
+                "MobileFaceNetExtractor currently expects FLOAT32 output, but model output is $outputType"
+            )
+        }
+
+        if (outputShape.isNotEmpty()) {
+            outputBatch = if (outputShape[0] > 0) outputShape[0] else inputBatch
+            outputSize = outputShape.last()
+        }
+
+        if (outputSize <= 0) {
+            throw IllegalStateException(
+                "Invalid output shape: ${outputShape.contentToString()}"
+            )
+        }
+
+        Log.d(
+            "MobileFaceNet",
+            "Resolved inputBatch=$inputBatch, inputHeight=$inputHeight, inputWidth=$inputWidth, inputChannels=$inputChannels, outputBatch=$outputBatch, outputSize=$outputSize"
+        )
     }
 
-    /**
-     * 将抠出来的人脸图片转换为 192 维特征向量 (Embedding)
-     */
     fun extractFeature(faceBitmap: Bitmap): FloatArray {
-        // 1. 缩放图片到 112x112
-        val resizedBitmap = Bitmap.createScaledBitmap(faceBitmap, inputSize, inputSize, true)
+        if (faceBitmap.isRecycled) {
+            throw IllegalStateException("Cannot extract feature from recycled bitmap.")
+        }
 
-        // 2. ⚠️ Edge Case 处理: 分配双倍内存 (Batch Size = 2)
-        // 2(张) * 112 * 112 * 3(RGB通道) * 4(Float字节数)
-        val byteBuffer = ByteBuffer.allocateDirect(2 * inputSize * inputSize * 3 * 4)
+        val resizedBitmap = if (
+            faceBitmap.width != inputWidth ||
+            faceBitmap.height != inputHeight ||
+            faceBitmap.config != Bitmap.Config.ARGB_8888
+        ) {
+            Bitmap.createScaledBitmap(faceBitmap, inputWidth, inputHeight, true)
+                .copy(Bitmap.Config.ARGB_8888, false)
+        } else {
+            faceBitmap.copy(Bitmap.Config.ARGB_8888, false)
+        }
+
+        val expectedInputBytes = inputBatch * inputHeight * inputWidth * inputChannels * 4
+
+        val byteBuffer = ByteBuffer.allocateDirect(expectedInputBytes)
         byteBuffer.order(ByteOrder.nativeOrder())
 
-        // 3. 提取真实图片的像素并写入内存的“前半部分”
-        val intValues = IntArray(inputSize * inputSize)
-        resizedBitmap.getPixels(intValues, 0, inputSize, 0, 0, inputSize, inputSize)
+        val intValues = IntArray(inputWidth * inputHeight)
+        resizedBitmap.getPixels(
+            intValues,
+            0,
+            inputWidth,
+            0,
+            0,
+            inputWidth,
+            inputHeight
+        )
 
-        // 替换 MobileFaceNetExtractor.kt 里的 for 循环部分
-        var pixel = 0
-        for (y in 0 until inputSize) {
-            for (x in 0 until inputSize) {
-                val value = intValues[pixel++]
-                val r = ((value shr 16) and 0xFF).toFloat()
-                val g = ((value shr 8) and 0xFF).toFloat()
-                val b = (value and 0xFF).toFloat()
+        /*
+         * Important:
+         * Your MobileFaceNet.tflite expects batch=2.
+         * But this app extracts one face at a time.
+         * Therefore we duplicate the same face into every batch slot,
+         * then use output[0] as the final embedding.
+         */
+        repeat(inputBatch) {
+            var pixel = 0
 
-                // 💡 核心修复：MobileFaceNet 需要 (像素值 - 127.5) / 128.0 的标准化格式
-                // 这会把 0~255 的颜色转换到 -1.0 到 1.0 之间
-                byteBuffer.putFloat((r - 127.5f) / 128.0f)
-                byteBuffer.putFloat((g - 127.5f) / 128.0f)
-                byteBuffer.putFloat((b - 127.5f) / 128.0f)
+            for (y in 0 until inputHeight) {
+                for (x in 0 until inputWidth) {
+                    val value = intValues[pixel++]
+
+                    val r = ((value shr 16) and 0xFF).toFloat()
+                    val g = ((value shr 8) and 0xFF).toFloat()
+                    val b = (value and 0xFF).toFloat()
+
+                    byteBuffer.putFloat((r - 127.5f) / 128.0f)
+                    byteBuffer.putFloat((g - 127.5f) / 128.0f)
+                    byteBuffer.putFloat((b - 127.5f) / 128.0f)
+                }
             }
         }
-        // 内存的“后半部分”会自动保持为默认值 0.0f，充当第二张假图片
 
-        // 4. 准备输出容器: 存放 2 个 192 维的数组
-        val output = Array(2) { FloatArray(outputSize) }
+        byteBuffer.rewind()
 
-        // 5. 运行 AI 推理
-        interpreter.run(byteBuffer, output)
+        Log.d(
+            "MobileFaceNet",
+            "Running inference. Bitmap=${resizedBitmap.width}x${resizedBitmap.height}, config=${resizedBitmap.config}, inputBatch=$inputBatch, bufferBytes=${byteBuffer.capacity()}, expectedBytes=$expectedInputBytes"
+        )
 
-        // 6. 只要第一张真实图片的特征
-        return output[0]
+        val actualOutputBatch = maxOf(outputBatch, inputBatch)
+        val output = Array(actualOutputBatch) {
+            FloatArray(outputSize)
+        }
+
+        try {
+            interpreter.run(byteBuffer, output)
+        } catch (e: Exception) {
+            Log.e(
+                "MobileFaceNet",
+                "TFLite run failed. " +
+                        "Model input batch=$inputBatch, " +
+                        "input=${inputWidth}x${inputHeight}x${inputChannels}, " +
+                        "bufferBytes=${byteBuffer.capacity()}, " +
+                        "outputBatch=$actualOutputBatch, outputSize=$outputSize",
+                e
+            )
+            throw e
+        }
+
+        val feature = output[0]
+
+        if (feature.isEmpty()) {
+            throw IllegalStateException("MobileFaceNet returned an empty feature vector.")
+        }
+
+        Log.d(
+            "MobileFaceNet",
+            "Embedding extracted successfully. size=${feature.size}"
+        )
+
+        return l2Normalize(feature)
     }
 
-    /**
-     * 数学算法：计算两个特征向量的余弦相似度 (Cosine Similarity)
-     * 返回值在 -1.0 到 1.0 之间，越接近 1.0 表示越像同一个人
-     */
     fun calculateSimilarity(v1: FloatArray, v2: FloatArray): Float {
+        val size = min(v1.size, v2.size)
+
+        if (size <= 0) return 0f
+
         var dotProduct = 0.0f
         var normA = 0.0f
         var normB = 0.0f
-        for (i in v1.indices) {
+
+        for (i in 0 until size) {
             dotProduct += v1[i] * v2[i]
             normA += v1[i] * v1[i]
             normB += v2[i] * v2[i]
         }
+
         if (normA == 0.0f || normB == 0.0f) return 0.0f
-        return (dotProduct / (sqrt(normA) * sqrt(normB)))
+
+        return dotProduct / (sqrt(normA) * sqrt(normB))
+    }
+
+    fun verifyMatch(v1: FloatArray, v2: FloatArray): Pair<Boolean, Float> {
+        val similarity = calculateSimilarity(v1, v2)
+        return (similarity >= VERIFICATION_THRESHOLD) to similarity
+    }
+
+    fun close() {
+        interpreter.close()
+    }
+
+    private fun l2Normalize(vector: FloatArray): FloatArray {
+        var sum = 0f
+
+        for (value in vector) {
+            sum += value * value
+        }
+
+        val norm = sqrt(sum)
+
+        if (norm == 0f) return vector
+
+        return FloatArray(vector.size) { index ->
+            vector[index] / norm
+        }
     }
 
     private fun loadModelFile(context: Context, modelName: String): MappedByteBuffer {
         val fileDescriptor = context.assets.openFd(modelName)
         val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
-        return inputStream.channel.map(FileChannel.MapMode.READ_ONLY, fileDescriptor.startOffset, fileDescriptor.declaredLength)
+
+        return inputStream.channel.map(
+            FileChannel.MapMode.READ_ONLY,
+            fileDescriptor.startOffset,
+            fileDescriptor.declaredLength
+        )
     }
 
-    /**
-     * 工业级置信度映射逻辑 (Confidence Calibration)
-     * 将 ArcFace 压抑的余弦相似度转换为人类易读的百分比置信度
-     */
-    /**
-     * 极简置信度映射 (Linear Normalization)
-     * 将机器的余弦相似度，平滑翻译为人类的百分比直觉
-     */
-    fun calculateConfidenceScore(cosineSimilarity: Float): Float {
-        // 过滤极其异常的负数结果
-        if (cosineSimilarity < 0f) return 0.05f
-
-        // 🚨 设定单一严格及格线
-        // 在 MobileFaceNet 中，0.50 已经是一个非常高的要求了
-        val threshold = 0.50f
-
-        return if (cosineSimilarity >= threshold) {
-            // 及格区间：把 0.50 ~ 1.0 的机器分数，均匀拉伸到 0.80 ~ 0.99 (80% 到 99%)
-            // 这样一来，只要是同一个人，分数看起来就会非常高（90%左右），解决“分数太低”的问题
-            0.80f + ((cosineSimilarity - threshold) / (1.0f - threshold)) * 0.19f
-        } else {
-            // 不及格区间：把 0.0 ~ 0.50 的分数，均匀压缩到 0.0 ~ 0.79 (低于 80%)
-            // 解决“乱认人”的问题，路人脸绝对无法越过 80% 的门槛
-            (cosineSimilarity / threshold) * 0.79f
-        }
-    }
-
-    fun close() {
-        interpreter.close()
+    companion object {
+        const val VERIFICATION_THRESHOLD = 0.6202f
     }
 }

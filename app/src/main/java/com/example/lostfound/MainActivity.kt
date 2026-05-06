@@ -8,38 +8,40 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.Box
 import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.lostfound.ui.theme.LostFoundTheme
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
+import com.google.firebase.firestore.firestoreSettings
+import com.google.firebase.firestore.persistentCacheSettings
 
 class MainActivity : ComponentActivity() {
 
-    // 🚨 申请 Android 13+ 通知权限
+    private var notificationPermissionGranted = false
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
-        if (isGranted) {
-            // Permission granted, start listening
-            SystemNotificationUtils.startListeningForNotifications(this)
-        }
+        notificationPermissionGranted = isGranted
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 1. 初始化系统通知渠道 (Android 8.0+)
+        setupFirestoreOffline()
         SystemNotificationUtils.createNotificationChannel(this)
-
-        // 2. 检查权限并启动通知监听器
         askNotificationPermission()
 
         setContent {
@@ -48,48 +50,92 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    RootNavigation(onLoginSuccess = {
-                        // 登录成功后重新启动监听（防止之前没监听）
-                        SystemNotificationUtils.startListeningForNotifications(this)
-                    })
+                    RootNavigation(
+                        notificationPermissionGranted = notificationPermissionGranted,
+                        activity = this
+                    )
                 }
             }
         }
     }
 
-    private fun askNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
-                PackageManager.PERMISSION_GRANTED
-            ) {
-                SystemNotificationUtils.startListeningForNotifications(this)
-            } else {
-                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    private fun setupFirestoreOffline() {
+        try {
+            val settings = firestoreSettings {
+                setLocalCacheSettings(
+                    persistentCacheSettings {
+                        setSizeBytes(FirebaseFirestoreSettings.CACHE_SIZE_UNLIMITED)
+                    }
+                )
             }
-        } else {
-            SystemNotificationUtils.startListeningForNotifications(this)
+            FirebaseFirestore.getInstance().firestoreSettings = settings
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        // 可选：如果不希望后台监听，可以 stop。但为了满足你的"后台通知"需求，我们可以让它继续存活一段时间
-        // SystemNotificationUtils.stopListening()
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+            notificationPermissionGranted = granted
+
+            if (!granted) {
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } else {
+            notificationPermissionGranted = true
+        }
     }
 }
 
 @Composable
-fun RootNavigation(onLoginSuccess: () -> Unit = {}) {
+fun RootNavigation(
+    notificationPermissionGranted: Boolean,
+    activity: MainActivity
+) {
     val rootNavController = rememberNavController()
     val auth = remember { FirebaseAuth.getInstance() }
 
-    val startDestination = if (auth.currentUser != null) {
-        onLoginSuccess() // 启动时已登录，直接监听
-        "main"
-    } else "login"
+    var authReady by remember { mutableStateOf(false) }
+    var currentUser by remember { mutableStateOf<FirebaseUser?>(null) }
 
-    NavHost(navController = rootNavController, startDestination = startDestination) {
+    DisposableEffect(auth) {
+        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            currentUser = firebaseAuth.currentUser
+            authReady = true
+        }
+        auth.addAuthStateListener(listener)
+        onDispose {
+            auth.removeAuthStateListener(listener)
+        }
+    }
 
+    LaunchedEffect(currentUser?.uid, notificationPermissionGranted) {
+        val uid = currentUser?.uid
+        if (uid.isNullOrBlank()) {
+            SystemNotificationUtils.stopListening()
+        } else if (notificationPermissionGranted) {
+            SystemNotificationUtils.startListeningForNotifications(activity, uid)
+        }
+    }
+
+    if (!authReady) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+
+    val startDestination = if (currentUser != null) "main" else "login"
+
+    NavHost(
+        navController = rootNavController,
+        startDestination = startDestination
+    ) {
         composable("login") {
             LoginScreen(navController = rootNavController)
         }
@@ -103,15 +149,26 @@ fun RootNavigation(onLoginSuccess: () -> Unit = {}) {
         }
 
         composable("main") {
-            MainScreen(
-                onLogout = {
-                    auth.signOut() 
-                    SystemNotificationUtils.stopListening() // 退出登录时停止监听
-                    rootNavController.navigate("login") { 
-                        popUpTo(0) { inclusive = true } 
+            val user = currentUser
+            if (user == null) {
+                LaunchedEffect(Unit) {
+                    rootNavController.navigate("login") {
+                        popUpTo(0) { inclusive = true }
                     }
                 }
-            )
+            } else {
+                MainScreen(
+                    currentUserId = user.uid,
+                    userEmail = user.email.orEmpty(),
+                    onLogout = {
+                        auth.signOut()
+                        SystemNotificationUtils.stopListening()
+                        rootNavController.navigate("login") {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    }
+                )
+            }
         }
     }
 }

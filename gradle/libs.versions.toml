@@ -8,6 +8,20 @@ espressoCore = "3.7.0"
 lifecycleRuntimeKtx = "2.10.0"
 activityCompose = "1.12.2"
 composeBom = "2024.09.00"
+materialIconsExtended = "1.4.0"
+navigationCompose = "2.9.8"
+firebaseAnalytics = "23.2.0"
+firebaseFirestore = "26.2.0"
+firebaseStorage = "22.0.1"
+playServicesMaps = "20.0.0"
+mapsCompose = "2.14.0"
+tensorflowLite = "2.16.1"
+tensorflowLiteSupport = "0.4.4"
+faceDetection = "16.1.7"
+kotlinxCoroutinesPlayServices = "1.9.0"
+firebaseBom = "34.10.0"
+playServicesAuth = "21.0.0"
+playServicesLocation = "21.2.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -24,6 +38,21 @@ androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "u
 androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "materialIconsExtended" }
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+firebase-analytics = { group = "com.google.firebase", name = "firebase-analytics", version.ref = "firebaseAnalytics" }
+firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore", version.ref = "firebaseFirestore" }
+firebase-storage = { group = "com.google.firebase", name = "firebase-storage", version.ref = "firebaseStorage" }
+play-services-maps = { group = "com.google.android.gms", name = "play-services-maps", version.ref = "playServicesMaps" }
+maps-compose = { group = "com.google.maps.android", name = "maps-compose", version.ref = "mapsCompose" }
+tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
+tensorflow-lite-support = { group = "org.tensorflow", name = "tensorflow-lite-support", version.ref = "tensorflowLiteSupport" }
+face-detection = { group = "com.google.mlkit", name = "face-detection", version.ref = "faceDetection" }
+kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "kotlinxCoroutinesPlayServices" }
+firebase-bom = { group = "platform(", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-auth-ktx_version_is_managed_by_the_bom = { group = "(", name = "firebase-auth-ktx" }
+play-services-auth = { group = "(", name = "play-services-auth", version.ref = "playServicesAuth" }
+play-services-location = { group = "(", name = "play-services-location", version.ref = "playServicesLocation" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
