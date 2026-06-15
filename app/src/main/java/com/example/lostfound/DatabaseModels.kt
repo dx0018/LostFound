@@ -48,6 +48,8 @@ data class MissingPerson(
     val photoUrl: String = "",
     // 🆕 保留 Storage 路径，方便删除时清理
     val photoStoragePath: String = "",
+    val thumbnailUrl: String = "",
+    val thumbnailStoragePath: String = "",
 
     val embedding: List<Double> = emptyList(),
 
@@ -72,9 +74,12 @@ data class SightingRecord(
     val estimatedFeatures: String = "",
     val clothingAppearance: String = "",
 
-    // 🆕 升级：Storage URL 替代 Base64
     val photoUrl: String = "",
     val photoStoragePath: String = "",
+    val thumbnailUrl: String = "",
+    val thumbnailStoragePath: String = "",
+    val matchedFaceUrl: String = "",
+    val matchedFaceStoragePath: String = "",
 
     val embedding: List<Double> = emptyList(),
 
@@ -94,8 +99,9 @@ data class NotificationRecord(
     val senderId: String = "",
     val title: String = "",
     val message: String = "",
-    // 🆕 升级：URL 替代 Base64（直接复用 Sighting 的 URL，无需重复上传）
     val photoUrl: String = "",
+    val thumbnailUrl: String = "",
+    val matchedFaceUrl: String = "",
     val relatedSightingId: String = "",
     val relatedMissingPersonId: String = "",
     val type: String = "SIGHTING_MATCH",

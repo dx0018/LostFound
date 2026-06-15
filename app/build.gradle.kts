@@ -84,6 +84,8 @@ dependencies {
 
     // Testing
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.12.1")
+    testImplementation("io.mockk:mockk:1.13.10")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

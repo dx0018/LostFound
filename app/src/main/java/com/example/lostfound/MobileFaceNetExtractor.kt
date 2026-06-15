@@ -10,7 +10,6 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
-import kotlin.math.min
 import kotlin.math.sqrt
 
 class MobileFaceNetExtractor(
@@ -47,6 +46,7 @@ class MobileFaceNetExtractor(
             "MobileFaceNet",
             "Input tensor shape=${inputShape.contentToString()}, type=$inputType"
         )
+
         Log.d(
             "MobileFaceNet",
             "Output tensor shape=${outputShape.contentToString()}, type=$outputType"
@@ -69,7 +69,9 @@ class MobileFaceNetExtractor(
         inputWidth = inputShape[2]
         inputChannels = inputShape[3]
 
-        if (inputBatch <= 0) inputBatch = 1
+        if (inputBatch <= 0) {
+            inputBatch = 1
+        }
 
         if (inputHeight <= 0 || inputWidth <= 0 || inputChannels <= 0) {
             throw IllegalStateException(
@@ -90,8 +92,17 @@ class MobileFaceNetExtractor(
         }
 
         if (outputShape.isNotEmpty()) {
-            outputBatch = if (outputShape[0] > 0) outputShape[0] else inputBatch
+            outputBatch = if (outputShape[0] > 0) {
+                outputShape[0]
+            } else {
+                inputBatch
+            }
+
             outputSize = outputShape.last()
+        }
+
+        if (outputBatch <= 0) {
+            outputBatch = inputBatch
         }
 
         if (outputSize <= 0) {
@@ -102,7 +113,12 @@ class MobileFaceNetExtractor(
 
         Log.d(
             "MobileFaceNet",
-            "Resolved inputBatch=$inputBatch, inputHeight=$inputHeight, inputWidth=$inputWidth, inputChannels=$inputChannels, outputBatch=$outputBatch, outputSize=$outputSize"
+            "Resolved inputBatch=$inputBatch, " +
+                    "inputHeight=$inputHeight, " +
+                    "inputWidth=$inputWidth, " +
+                    "inputChannels=$inputChannels, " +
+                    "outputBatch=$outputBatch, " +
+                    "outputSize=$outputSize"
         )
     }
 
@@ -128,6 +144,7 @@ class MobileFaceNetExtractor(
         byteBuffer.order(ByteOrder.nativeOrder())
 
         val intValues = IntArray(inputWidth * inputHeight)
+
         resizedBitmap.getPixels(
             intValues,
             0,
@@ -140,10 +157,10 @@ class MobileFaceNetExtractor(
 
         /*
          * Important:
-         * Your MobileFaceNet.tflite expects batch=2.
-         * But this app extracts one face at a time.
-         * Therefore we duplicate the same face into every batch slot,
-         * then use output[0] as the final embedding.
+         * This MobileFaceNet.tflite model expects batch=2.
+         * However, the app extracts one face at a time.
+         * Therefore, the same aligned face is duplicated into each batch slot,
+         * and output[0] is used as the final embedding.
          */
         repeat(inputBatch) {
             var pixel = 0
@@ -167,10 +184,15 @@ class MobileFaceNetExtractor(
 
         Log.d(
             "MobileFaceNet",
-            "Running inference. Bitmap=${resizedBitmap.width}x${resizedBitmap.height}, config=${resizedBitmap.config}, inputBatch=$inputBatch, bufferBytes=${byteBuffer.capacity()}, expectedBytes=$expectedInputBytes"
+            "Running inference. " +
+                    "Bitmap=${resizedBitmap.width}x${resizedBitmap.height}, " +
+                    "config=${resizedBitmap.config}, " +
+                    "inputBatch=$inputBatch, " +
+                    "bufferBytes=${byteBuffer.capacity()}, " +
+                    "expectedBytes=$expectedInputBytes"
         )
 
-        val actualOutputBatch = maxOf(outputBatch, inputBatch)
+        val actualOutputBatch = outputBatch
         val output = Array(actualOutputBatch) {
             FloatArray(outputSize)
         }
@@ -181,10 +203,14 @@ class MobileFaceNetExtractor(
             Log.e(
                 "MobileFaceNet",
                 "TFLite run failed. " +
-                        "Model input batch=$inputBatch, " +
-                        "input=${inputWidth}x${inputHeight}x${inputChannels}, " +
+                        "inputBatch=$inputBatch, " +
+                        "input=${inputBatch}x${inputHeight}x${inputWidth}x${inputChannels}, " +
+                        "bitmap=${resizedBitmap.width}x${resizedBitmap.height}, " +
+                        "bitmapConfig=${resizedBitmap.config}, " +
                         "bufferBytes=${byteBuffer.capacity()}, " +
-                        "outputBatch=$actualOutputBatch, outputSize=$outputSize",
+                        "expectedBytes=$expectedInputBytes, " +
+                        "outputBatch=$actualOutputBatch, " +
+                        "outputSize=$outputSize",
                 e
             )
             throw e
@@ -196,18 +222,22 @@ class MobileFaceNetExtractor(
             throw IllegalStateException("MobileFaceNet returned an empty feature vector.")
         }
 
+        val normalizedFeature = l2Normalize(feature)
+
         Log.d(
             "MobileFaceNet",
-            "Embedding extracted successfully. size=${feature.size}"
+            "Embedding extracted successfully. size=${normalizedFeature.size}"
         )
 
-        return l2Normalize(feature)
+        return normalizedFeature
     }
 
     fun calculateSimilarity(v1: FloatArray, v2: FloatArray): Float {
-        val size = min(v1.size, v2.size)
+        val size = minOf(v1.size, v2.size)
 
-        if (size <= 0) return 0f
+        if (size <= 0) {
+            return 0f
+        }
 
         var dotProduct = 0.0f
         var normA = 0.0f
@@ -219,14 +249,53 @@ class MobileFaceNetExtractor(
             normB += v2[i] * v2[i]
         }
 
-        if (normA == 0.0f || normB == 0.0f) return 0.0f
+        val sqrtA = sqrt(normA)
+        val sqrtB = sqrt(normB)
 
-        return dotProduct / (sqrt(normA) * sqrt(normB))
+        if (sqrtA <= 0.0f || sqrtB <= 0.0f) {
+            return 0.0f
+        }
+
+        return dotProduct / (sqrtA * sqrtB)
     }
 
-    fun verifyMatch(v1: FloatArray, v2: FloatArray): Pair<Boolean, Float> {
+    fun calculateCosineDistance(v1: FloatArray, v2: FloatArray): Float {
         val similarity = calculateSimilarity(v1, v2)
-        return (similarity >= VERIFICATION_THRESHOLD) to similarity
+        return 1.0f - similarity
+    }
+
+    /*
+     * Important:
+     * The Jupyter evaluation used cosine distance:
+     *
+     *     match if distance < 0.6202
+     *
+     * Therefore, this APK version also uses cosine distance for the match decision.
+     *
+     * However, the second returned value is still similarity/confidence,
+     * so existing ReportScreen.kt and SightingScreen.kt code can continue using:
+     *
+     *     val (isMatch, similarity) = extractor.verifyMatch(...)
+     *     aiConfidenceScore = (similarity * 100).roundToInt()
+     */
+    fun verifyMatch(v1: FloatArray, v2: FloatArray): Pair<Boolean, Float> {
+        val similarity = calculateSimilarity(v1, v2).coerceIn(-1.0f, 1.0f)
+        val distance = 1.0f - similarity
+
+        val isMatch = distance < VERIFICATION_DISTANCE_THRESHOLD
+
+        Log.d(
+            "MobileFaceNet",
+            "verifyMatch: " +
+                    "similarity=$similarity, " +
+                    "distance=$distance, " +
+                    "threshold=$VERIFICATION_DISTANCE_THRESHOLD, " +
+                    "isMatch=$isMatch"
+        )
+
+        val confidence = similarity.coerceIn(0.0f, 1.0f)
+
+        return isMatch to confidence
     }
 
     fun close() {
@@ -242,7 +311,9 @@ class MobileFaceNetExtractor(
 
         val norm = sqrt(sum)
 
-        if (norm == 0f) return vector
+        if (norm == 0f) {
+            return vector
+        }
 
         return FloatArray(vector.size) { index ->
             vector[index] / norm
@@ -261,6 +332,16 @@ class MobileFaceNetExtractor(
     }
 
     companion object {
-        const val VERIFICATION_THRESHOLD = 0.6202f
+        /*
+         * This value comes from the Jupyter evaluation.
+         * It is a cosine distance threshold, not a cosine similarity threshold.
+         *
+         * Python rule:
+         *     y_pred = (distances < 0.6202)
+         *
+         * APK rule:
+         *     isMatch = cosineDistance < 0.6202
+         */
+        const val VERIFICATION_DISTANCE_THRESHOLD = 0.6202f
     }
 }

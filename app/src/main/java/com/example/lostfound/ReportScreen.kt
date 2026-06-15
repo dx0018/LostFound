@@ -17,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -95,6 +96,8 @@ fun ReportScreenContent(
 
     var showMatchDialog by remember { mutableStateOf(false) }
     var historicalMatches by remember { mutableStateOf<List<SightingRecord>>(emptyList()) }
+    var showFaceSelectorDialog by remember { mutableStateOf(false) }
+    var detectedFacesList by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
     var currentMissingPersonId by remember { mutableStateOf("") }
 
     var showDatePicker by remember { mutableStateOf(false) }
@@ -520,24 +523,11 @@ fun ReportScreenContent(
                     }
 
                     isUploading = true
+                    progressText = "🧐 Step 1/5: Detecting face..."
 
-                    scope.launch(Dispatchers.IO) {
+                    scope.launch(Dispatchers.Default) {
                         val yolo = YoloFaceDetector(context)
-                        val extractor = MobileFaceNetExtractor(context)
-                        val highAccuracyOpts = FaceDetectorOptions.Builder()
-                            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
-                            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-                            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-                            .build()
-                        val mlKitDetector = FaceDetection.getClient(highAccuracyOpts)
-
-                        var uploadedPath: String? = null
-
                         try {
-                            withContext(Dispatchers.Main) {
-                                progressText = "🧐 Step 1/5: Detecting face..."
-                            }
-
                             val faces = yolo.detect(selectedBitmap!!)
                             if (faces.isEmpty()) {
                                 withContext(Dispatchers.Main) {
@@ -551,184 +541,75 @@ fun ReportScreenContent(
                                 return@launch
                             }
 
-                            val crop = ImageUtils.cropFaceWithPadding(
-                                selectedBitmap!!,
-                                faces[0].boundingBox
-                            )
-
-                            if (crop == null) {
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(
-                                        context,
-                                        "Failed to crop face, please retry.",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                    isUploading = false
-                                }
-                                return@launch
-                            }
-
-                            withContext(Dispatchers.Main) {
-                                progressText = "🤔 Step 2/5: Finding facial landmarks..."
-                            }
-
-                            val inputImage = InputImage.fromBitmap(crop, 0)
-                            val mlKitFaces = mlKitDetector.process(inputImage).await()
-
-                            if (mlKitFaces.isEmpty()) {
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(
-                                        context,
-                                        "❌ Couldn't find landmarks. Is the face clear?",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                    isUploading = false
-                                }
-                                return@launch
-                            }
-
-                            val mlKitFace = mlKitFaces[0]
-
-                            withContext(Dispatchers.Main) {
-                                progressText = "📐 Step 3/5: Aligning face..."
-                            }
-
-                            val alignedFaceBitmap = ImageUtils.alignFace(crop, mlKitFace)
-
-                            Log.d(
-                                "FaceDebug",
-                                "Report aligned bitmap = ${alignedFaceBitmap.width}x${alignedFaceBitmap.height}, " +
-                                        "config=${alignedFaceBitmap.config}, recycled=${alignedFaceBitmap.isRecycled}"
-                            )
-
-                            if (
-                                alignedFaceBitmap.isRecycled ||
-                                alignedFaceBitmap.width != 112 ||
-                                alignedFaceBitmap.height != 112
-                            ) {
-                                throw IllegalStateException(
-                                    "Invalid aligned bitmap: " +
-                                            "${alignedFaceBitmap.width}x${alignedFaceBitmap.height}, " +
-                                            "recycled=${alignedFaceBitmap.isRecycled}"
+                            if (faces.size == 1) {
+                                val crop = ImageUtils.cropFaceWithPadding(
+                                    selectedBitmap!!,
+                                    faces[0].boundingBox
                                 )
-                            }
-
-                            withContext(Dispatchers.Main) {
-                                progressText = "🔬 Step 4/5: Extracting face features..."
-                            }
-
-                            val embeddingList = extractor.extractFeature(alignedFaceBitmap)
-                                .map { it.toDouble() }
-
-                            Log.d(
-                                "FaceDebug",
-                                "Report embedding extracted successfully, size=${embeddingList.size}"
-                            )
-
-                            withContext(Dispatchers.Main) {
-                                progressText = "☁️ Step 5/5: Uploading photo to cloud..."
-                            }
-
-                            val (photoUrl, storagePath) = StorageRepository.uploadBitmap(
-                                bitmap = selectedBitmap!!,
-                                folder = "missing_persons",
-                                userId = currentUser.uid
-                            )
-                            uploadedPath = storagePath
-
-                            val db = FirebaseFirestore.getInstance()
-
-                            withContext(Dispatchers.Main) {
-                                progressText = "💾 Saving to Missing Persons DB..."
-                            }
-
-                            val newMpRef = db.collection("MissingPersons").document()
-                            currentMissingPersonId = newMpRef.id
-
-                            val personData = MissingPerson(
-                                id = currentMissingPersonId,
-                                ownerId = currentUser.uid,
-                                name = name,
-                                age = age,
-                                gender = gender,
-                                height = height,
-                                weight = weight,
-                                lastSeenDate = lastSeenDate,
-                                lastSeenLocation = location,
-                                locationLat = locationLat,
-                                locationLng = locationLng,
-                                contactPhone = contact,
-                                photoUrl = photoUrl,
-                                photoStoragePath = storagePath,
-                                embedding = embeddingList,
-                                status = MPStatus.ACTIVE.name
-                            )
-
-                            newMpRef.set(personData).await()
-
-                            withContext(Dispatchers.Main) {
-                                progressText = "🔍 Searching historical sightings..."
-                            }
-
-                            val pendingSightings = db.collection("Sightings")
-                                .whereEqualTo("status", SightingStatus.PENDING.name)
-                                .get()
-                                .await()
-                                .toObjects(SightingRecord::class.java)
-
-                            val foundMatches = mutableListOf<SightingRecord>()
-
-                            for (sighting in pendingSightings) {
-                                if (sighting.embedding.isNotEmpty()) {
-                                    val (isMatch, similarity) = extractor.verifyMatch(
-                                        sighting.embedding.map { it.toFloat() }.toFloatArray(),
-                                        embeddingList.map { it.toFloat() }.toFloatArray()
+                                if (crop == null) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(
+                                            context,
+                                            "Failed to crop face, please retry.",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        isUploading = false
+                                    }
+                                    return@launch
+                                }
+                                executePublicationSequence(
+                                    context = context,
+                                    currentUser = currentUser,
+                                    selectedBitmap = selectedBitmap!!,
+                                    crop = crop,
+                                    name = name,
+                                    age = age,
+                                    gender = gender,
+                                    height = height,
+                                    weight = weight,
+                                    lastSeenDate = lastSeenDate,
+                                    location = location,
+                                    locationLat = locationLat,
+                                    locationLng = locationLng,
+                                    contact = contact,
+                                    onProgressUpdate = { progressText = it },
+                                    onNavigateBack = onNavigateBack,
+                                    onHistoricalMatchesFound = { matches ->
+                                        historicalMatches = matches
+                                        showMatchDialog = true
+                                    },
+                                    onDone = { isUploading = false }
+                                )
+                            } else {
+                                // Multiple faces detected! Crop them all and show selector dialog
+                                val faceCrops = mutableListOf<Bitmap>()
+                                for (faceBox in faces) {
+                                    val crop = ImageUtils.cropFaceWithPadding(
+                                        selectedBitmap!!,
+                                        faceBox.boundingBox
                                     )
-
-                                    if (isMatch) {
-                                        sighting.aiConfidenceScore =
-                                            (similarity * 100).roundToInt()
-                                        foundMatches.add(sighting)
+                                    if (crop != null) {
+                                        faceCrops.add(crop)
                                     }
                                 }
-                            }
-
-                            withContext(Dispatchers.Main) {
-                                isUploading = false
-
-                                if (foundMatches.isNotEmpty()) {
-                                    historicalMatches = foundMatches.sortedByDescending {
-                                        it.aiConfidenceScore
-                                    }
-                                    showMatchDialog = true
-                                } else {
-                                    Toast.makeText(
-                                        context,
-                                        "✅ Report Published Successfully!",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                    onNavigateBack()
+                                withContext(Dispatchers.Main) {
+                                    isUploading = false
+                                    detectedFacesList = faceCrops
+                                    showFaceSelectorDialog = true
                                 }
                             }
                         } catch (e: Exception) {
-                            Log.e("FaceDebug", "ReportScreen pipeline failed", e)
-
-                            uploadedPath?.let {
-                                StorageRepository.deleteByPath(it)
-                            }
-
+                            Log.e("FaceDebug", "YOLO detection failed", e)
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(
                                     context,
-                                    "💥 Error: ${e.message ?: "Unknown"}",
-                                    Toast.LENGTH_LONG
+                                    "💥 Bounding Box detection failed: ${e.message}",
+                                    Toast.LENGTH_SHORT
                                 ).show()
                                 isUploading = false
                             }
                         } finally {
                             yolo.close()
-                            extractor.close()
-                            mlKitDetector.close()
                         }
                     }
                 },
@@ -749,8 +630,96 @@ fun ReportScreenContent(
                     )
                 }
             }
+        }
+    }
 
-            Spacer(modifier = Modifier.height(80.dp))
+    if (showFaceSelectorDialog && detectedFacesList.isNotEmpty()) {
+        Dialog(onDismissRequest = { showFaceSelectorDialog = false }) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "🧐 Select Missing Person Face",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Text(
+                        "Multiple faces detected. Please tap on the face of the missing person to proceed.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Gray,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        detectedFacesList.forEach { faceCrop ->
+                            Card(
+                                modifier = Modifier
+                                    .size(100.dp)
+                                    .clickable {
+                                        showFaceSelectorDialog = false
+                                        isUploading = true
+                                        scope.launch(Dispatchers.Default) {
+                                            executePublicationSequence(
+                                                context = context,
+                                                currentUser = currentUser,
+                                                selectedBitmap = selectedBitmap!!,
+                                                crop = faceCrop,
+                                                name = name,
+                                                age = age,
+                                                gender = gender,
+                                                height = height,
+                                                weight = weight,
+                                                lastSeenDate = lastSeenDate,
+                                                location = location,
+                                                locationLat = locationLat,
+                                                locationLng = locationLng,
+                                                contact = contact,
+                                                onProgressUpdate = { progressText = it },
+                                                onNavigateBack = onNavigateBack,
+                                                onHistoricalMatchesFound = { matches ->
+                                                    historicalMatches = matches
+                                                    showMatchDialog = true
+                                                },
+                                                onDone = { isUploading = false }
+                                            )
+                                        }
+                                    },
+                                shape = RoundedCornerShape(12.dp),
+                                elevation = CardDefaults.cardElevation(4.dp)
+                            ) {
+                                Image(
+                                    bitmap = faceCrop.asImageBitmap(),
+                                    contentDescription = "Face option",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    OutlinedButton(
+                        onClick = { showFaceSelectorDialog = false },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            }
         }
     }
 
@@ -787,9 +756,9 @@ fun ReportScreenContent(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    if (topMatch.photoUrl.isNotBlank()) {
+                    if (topMatch.thumbnailUrl.isNotBlank() || topMatch.photoUrl.isNotBlank()) {
                         AsyncImage(
-                            model = topMatch.photoUrl,
+                            model = topMatch.thumbnailUrl.ifBlank { topMatch.photoUrl },
                             contentDescription = null,
                             modifier = Modifier
                                 .size(120.dp)
@@ -875,6 +844,7 @@ fun ReportScreenContent(
                                                 title = "🙏 Clue Confirmed!",
                                                 message = "A family just matched your orphan sighting to their missing report. Thank you for your help!",
                                                 photoUrl = topMatch.photoUrl,
+                                                thumbnailUrl = topMatch.thumbnailUrl,
                                                 type = "THANK_YOU",
                                                 relatedSightingId = topMatch.id,
                                                 relatedMissingPersonId = currentMissingPersonId
@@ -923,6 +893,7 @@ fun MapLocationPickerDialog(
 ) {
     var selectedLatLng by remember { mutableStateOf<LatLng?>(null) }
     var addressText by remember { mutableStateOf("Tap on the map to select a location") }
+    var addressSearchQuery by remember { mutableStateOf("") }
 
     val cameraPositionState = rememberCameraPositionState {
         position = com.google.android.gms.maps.model.CameraPosition.fromLatLngZoom(
@@ -1003,6 +974,62 @@ fun MapLocationPickerDialog(
                     }
                 }
 
+                // 🔍 Map Autocomplete Address Search Bar Overlay
+                Card(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(16.dp)
+                        .fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = addressSearchQuery,
+                            onValueChange = { addressSearchQuery = it },
+                            placeholder = { Text("Search address or place...") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (addressSearchQuery.isNotBlank()) {
+                                    scope.launch(Dispatchers.IO) {
+                                        try {
+                                            val geocoder = Geocoder(context, Locale.getDefault())
+                                            @Suppress("DEPRECATION")
+                                            val results = geocoder.getFromLocationName(addressSearchQuery, 1)
+                                            val address = results?.firstOrNull()
+                                            if (address != null) {
+                                                val latLng = LatLng(address.latitude, address.longitude)
+                                                selectedLatLng = latLng
+                                                addressText = address.getAddressLine(0) ?: "Selected Location"
+                                                withContext(Dispatchers.Main) {
+                                                    cameraPositionState.position = com.google.android.gms.maps.model.CameraPosition.fromLatLngZoom(latLng, 15f)
+                                                }
+                                            } else {
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(context, "Location not found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(context, "Search error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        ) {
+                            Text("Search")
+                        }
+                    }
+                }
+
                 Card(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -1029,5 +1056,175 @@ private fun Long.toReadableDateTime(): String {
         formatter.format(Date(this))
     } catch (e: Exception) {
         "Unknown time"
+    }
+}
+
+private suspend fun executePublicationSequence(
+    context: android.content.Context,
+    currentUser: FirebaseUser,
+    selectedBitmap: Bitmap,
+    crop: Bitmap,
+    name: String,
+    age: String,
+    gender: String,
+    height: String,
+    weight: String,
+    lastSeenDate: String,
+    location: String,
+    locationLat: Double?,
+    locationLng: Double?,
+    contact: String,
+    onProgressUpdate: (String) -> Unit,
+    onNavigateBack: () -> Unit,
+    onHistoricalMatchesFound: (List<SightingRecord>) -> Unit,
+    onDone: (Boolean) -> Unit
+) {
+    var uploadedPath: String? = null
+    var uploadedThumbnailPath: String? = null
+    val extractor = MobileFaceNetExtractor(context)
+    val highAccuracyOpts = FaceDetectorOptions.Builder()
+        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+        .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+        .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
+        .build()
+    val mlKitDetector = FaceDetection.getClient(highAccuracyOpts)
+    try {
+        onProgressUpdate("🤔 Step 2/5: Finding facial landmarks...")
+        val inputImage = InputImage.fromBitmap(crop, 0)
+        val mlKitFaces = mlKitDetector.process(inputImage).await()
+
+        if (mlKitFaces.isEmpty()) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    context,
+                    "❌ Couldn't find landmarks. Is the face clear?",
+                    Toast.LENGTH_SHORT
+                ).show()
+                onDone(false)
+            }
+            return
+        }
+
+        val mlKitFace = mlKitFaces[0]
+        onProgressUpdate("📐 Step 3/5: Aligning face...")
+        val alignedFaceBitmap = ImageUtils.alignFace(crop, mlKitFace)
+
+        Log.d(
+            "FaceDebug",
+            "Report aligned bitmap = ${alignedFaceBitmap.width}x${alignedFaceBitmap.height}, " +
+                    "config=${alignedFaceBitmap.config}, recycled=${alignedFaceBitmap.isRecycled}"
+        )
+
+        if (
+            alignedFaceBitmap.isRecycled ||
+            alignedFaceBitmap.width != 112 ||
+            alignedFaceBitmap.height != 112
+        ) {
+            throw IllegalStateException(
+                "Invalid aligned bitmap: " +
+                        "${alignedFaceBitmap.width}x${alignedFaceBitmap.height}, " +
+                        "recycled=${alignedFaceBitmap.isRecycled}"
+            )
+        }
+
+        onProgressUpdate("🔬 Step 4/5: Extracting face features...")
+        val embeddingList = extractor.extractFeature(alignedFaceBitmap)
+            .map { it.toDouble() }
+
+        Log.d(
+            "FaceDebug",
+            "Report embedding extracted successfully, size=${embeddingList.size}"
+        )
+
+        onProgressUpdate("☁️ Step 5/5: Uploading photo to cloud...")
+        val uploadResult = StorageRepository.uploadBitmapWithThumbnail(
+            bitmap = selectedBitmap,
+            folder = "missing_persons",
+            userId = currentUser.uid
+        )
+        uploadedPath = uploadResult.photoStoragePath
+        uploadedThumbnailPath = uploadResult.thumbnailStoragePath
+
+        val db = FirebaseFirestore.getInstance()
+        onProgressUpdate("💾 Saving to Missing Persons DB...")
+
+        val newMpRef = db.collection("MissingPersons").document()
+        val personData = MissingPerson(
+            id = newMpRef.id,
+            ownerId = currentUser.uid,
+            name = name,
+            age = age,
+            gender = gender,
+            height = height,
+            weight = weight,
+            lastSeenDate = lastSeenDate,
+            lastSeenLocation = location,
+            locationLat = locationLat,
+            locationLng = locationLng,
+            contactPhone = contact,
+            photoUrl = uploadResult.photoUrl,
+            photoStoragePath = uploadResult.photoStoragePath,
+            thumbnailUrl = uploadResult.thumbnailUrl,
+            thumbnailStoragePath = uploadResult.thumbnailStoragePath,
+            embedding = embeddingList,
+            status = MPStatus.ACTIVE.name
+        )
+
+        newMpRef.set(personData).await()
+        onProgressUpdate("🔍 Searching historical sightings...")
+
+        val pendingSightings = db.collection("Sightings")
+            .whereEqualTo("status", SightingStatus.PENDING.name)
+            .get()
+            .await()
+            .toObjects(SightingRecord::class.java)
+
+        val foundMatches = mutableListOf<SightingRecord>()
+        for (sighting in pendingSightings) {
+            if (sighting.embedding.isNotEmpty()) {
+                val (isMatch, similarity) = extractor.verifyMatch(
+                    sighting.embedding.map { it.toFloat() }.toFloatArray(),
+                    embeddingList.map { it.toFloat() }.toFloatArray()
+                )
+
+                if (isMatch) {
+                    sighting.aiConfidenceScore = (similarity * 100).roundToInt()
+                    foundMatches.add(sighting)
+                }
+            }
+        }
+
+        withContext(Dispatchers.Main) {
+            if (foundMatches.isNotEmpty()) {
+                onHistoricalMatchesFound(foundMatches.sortedByDescending { it.aiConfidenceScore })
+            } else {
+                Toast.makeText(
+                    context,
+                    "✅ Report Published Successfully!",
+                    Toast.LENGTH_LONG
+                ).show()
+                onNavigateBack()
+            }
+            onDone(true)
+        }
+    } catch (e: Exception) {
+        Log.e("FaceDebug", "ReportScreen pipeline failed", e)
+        uploadedPath?.let {
+            StorageRepository.deleteByPath(it)
+        }
+        uploadedThumbnailPath?.let {
+            StorageRepository.deleteByPath(it)
+        }
+        withContext(Dispatchers.Main) {
+            Toast.makeText(
+                context,
+                "💥 Error: ${e.message ?: "Unknown"}",
+                Toast.LENGTH_LONG
+            ).show()
+            onDone(false)
+        }
+    } finally {
+        extractor.close()
+        mlKitDetector.close()
     }
 }

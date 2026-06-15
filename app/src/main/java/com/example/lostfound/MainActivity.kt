@@ -160,6 +160,9 @@ fun RootNavigation(
                 MainScreen(
                     currentUserId = user.uid,
                     userEmail = user.email.orEmpty(),
+                    onNavigateToEditProfile = {
+                        rootNavController.navigate("setup_profile")
+                    },
                     onLogout = {
                         auth.signOut()
                         SystemNotificationUtils.stopListening()

@@ -209,6 +209,7 @@ fun NotificationsTab(currentUserId: String) {
                                             title = "🙏 Thank You!",
                                             message = "The family has confirmed your sighting. Thank you for your help!",
                                             photoUrl = note.photoUrl,
+                                            thumbnailUrl = note.thumbnailUrl,
                                             relatedSightingId = note.relatedSightingId,
                                             relatedMissingPersonId = note.relatedMissingPersonId,
                                             type = "THANK_YOU"
@@ -250,10 +251,17 @@ fun NotificationsTab(currentUserId: String) {
                                     try {
                                         val db = FirebaseFirestore.getInstance()
 
-                                        db.collection("Sightings")
-                                            .document(note.relatedSightingId)
-                                            .update("status", SightingStatus.REJECTED.name)
-                                            .await()
+                                        val sightingRef = db.collection("Sightings").document(note.relatedSightingId)
+                                        val sightingSnap = sightingRef.get().await()
+                                        val sightingData = sightingSnap.toObject(SightingRecord::class.java)
+
+                                        sightingData?.let { sig ->
+                                            if (sig.photoStoragePath.isNotBlank()) StorageRepository.deleteByPath(sig.photoStoragePath)
+                                            if (sig.thumbnailStoragePath.isNotBlank()) StorageRepository.deleteByPath(sig.thumbnailStoragePath)
+                                            if (sig.matchedFaceStoragePath.isNotBlank()) StorageRepository.deleteByPath(sig.matchedFaceStoragePath)
+                                        }
+
+                                        sightingRef.update("status", SightingStatus.REJECTED.name).await()
 
                                         if (note.relatedMissingPersonId.isNotEmpty()) {
                                             val mpRef = db.collection("MissingPersons")
@@ -423,7 +431,7 @@ fun MyRecordsTab(
                 MyRecordCard(
                     title = person.name,
                     status = person.status,
-                    photoUrl = person.photoUrl
+                    photoUrl = person.thumbnailUrl.ifBlank { person.photoUrl }
                 ) {
                     selectedMP = person
                 }
@@ -453,7 +461,7 @@ fun MyRecordsTab(
                 MyRecordCard(
                     title = "Sighting @ ${sighting.location.ifBlank { "Unknown Location" }}",
                     status = sighting.status,
-                    photoUrl = sighting.photoUrl
+                    photoUrl = sighting.matchedFaceUrl.ifBlank { sighting.thumbnailUrl.ifBlank { sighting.photoUrl } }
                 ) {
                     selectedSighting = sighting
                 }
@@ -585,14 +593,28 @@ fun MyRecordsTab(
             onDismissRequest = { selectedSighting = null },
             title = { Text("Sighting Detail") },
             text = {
-                Text(
-                    "Status: ${sighting.status}\n\n" +
-                            if (sighting.status == SightingStatus.LINKED.name) {
-                                "Thank you! The family has confirmed your clue."
-                            } else {
-                                "Waiting for family verification."
-                            }
-                )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (sighting.photoUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = sighting.photoUrl,
+                            contentDescription = "Sighting Evidence",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(180.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                    Text(
+                        "Status: ${sighting.status}\n\n" +
+                                if (sighting.status == SightingStatus.LINKED.name) {
+                                    "Thank you! The family has confirmed your clue."
+                                } else {
+                                    "Waiting for family verification."
+                                }
+                    )
+                }
             },
             confirmButton = {
                 Button(onClick = { selectedSighting = null }) {
@@ -605,11 +627,18 @@ fun MyRecordsTab(
                         onClick = {
                             scope.launch(Dispatchers.IO) {
                                 try {
-                                    FirebaseFirestore.getInstance()
-                                        .collection("Sightings")
-                                        .document(sighting.id)
-                                        .update("status", SightingStatus.REJECTED.name)
-                                        .await()
+                                    val db = FirebaseFirestore.getInstance()
+                                    val sightingRef = db.collection("Sightings").document(sighting.id)
+                                    val sightingSnap = sightingRef.get().await()
+                                    val sightingData = sightingSnap.toObject(SightingRecord::class.java)
+
+                                    sightingData?.let { sig ->
+                                        if (sig.photoStoragePath.isNotBlank()) StorageRepository.deleteByPath(sig.photoStoragePath)
+                                        if (sig.thumbnailStoragePath.isNotBlank()) StorageRepository.deleteByPath(sig.thumbnailStoragePath)
+                                        if (sig.matchedFaceStoragePath.isNotBlank()) StorageRepository.deleteByPath(sig.matchedFaceStoragePath)
+                                    }
+
+                                    sightingRef.update("status", SightingStatus.REJECTED.name).await()
 
                                     withContext(Dispatchers.Main) {
                                         selectedSighting = null
@@ -653,9 +682,9 @@ fun NotificationCard(note: NotificationRecord, onClick: () -> Unit) {
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (note.photoUrl.isNotBlank()) {
+            if (note.matchedFaceUrl.isNotBlank() || note.thumbnailUrl.isNotBlank() || note.photoUrl.isNotBlank()) {
                 AsyncImage(
-                    model = note.photoUrl,
+                    model = note.matchedFaceUrl.ifBlank { note.thumbnailUrl.ifBlank { note.photoUrl } },
                     contentDescription = null,
                     modifier = Modifier
                         .size(60.dp)

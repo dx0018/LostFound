@@ -195,26 +195,76 @@ private fun SightingScreenContent(
     LaunchedEffect(scanResults) {
         val matchResult = scanResults.firstOrNull { it.isMatch && it.matchedPerson != null }
         if (matchResult != null && !hasAutoUploaded && selectedBitmap != null) {
+            val matchedMP = matchResult.matchedPerson!!
+            
+            // 🆕 Debounce check: query for recent sightings of the same missing person by this user within 10 mins & 100m
+            var isDuplicate = false
+            try {
+                val db = FirebaseFirestore.getInstance()
+                val tenMinutesAgo = System.currentTimeMillis() - (10 * 60 * 1000)
+                val recentSightingsSnap = db.collection("Sightings")
+                    .whereEqualTo("linkedMissingPersonId", matchedMP.id)
+                    .whereEqualTo("ownerId", currentUser.uid)
+                    .whereGreaterThanOrEqualTo("timestamp", tenMinutesAgo)
+                    .get()
+                    .await()
+                
+                val recentSightings = recentSightingsSnap.toObjects(SightingRecord::class.java)
+                for (recent in recentSightings) {
+                    val recentLat = recent.locationLat
+                    val recentLng = recent.locationLng
+                    if (recentLat != null && recentLng != null && locationLat != null && locationLng != null) {
+                        val distanceResults = FloatArray(1)
+                        android.location.Location.distanceBetween(
+                            locationLat!!, locationLng!!,
+                            recentLat, recentLng,
+                            distanceResults
+                        )
+                        if (distanceResults[0] < 100f) { // 100 meters
+                            isDuplicate = true
+                            break
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            
+            if (isDuplicate) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        "ℹ️ Sighting already sent from this location recently.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                return@LaunchedEffect
+            }
+
             hasAutoUploaded = true
             isUploading = true
 
             withContext(Dispatchers.IO) {
                 var uploadedPath: String? = null
+                var uploadedThumbnailPath: String? = null
+                var uploadedFacePath: String? = null
                 try {
-                    val (photoUrl, storagePath) = StorageRepository.uploadBitmap(
-                        bitmap = selectedBitmap!!,
+                    val uploadResult = StorageRepository.uploadBitmapWithFace(
+                        sightingBitmap = selectedBitmap!!,
+                        faceBitmap = matchResult.croppedFace,
                         folder = "sightings",
                         userId = currentUser.uid
                     )
-                    uploadedPath = storagePath
-
+                    uploadedPath = uploadResult.photoStoragePath
+                    uploadedThumbnailPath = uploadResult.thumbnailStoragePath
+                    uploadedFacePath = uploadResult.matchedFaceStoragePath
+ 
                     val db = FirebaseFirestore.getInstance()
                     val batch = db.batch()
-
+ 
                     val newSightingRef = db.collection("Sightings").document()
-                    val matchedMP = matchResult.matchedPerson!!
                     val confidencePercent = (matchResult.similarity * 100).roundToInt()
-
+ 
                     val sightingData = SightingRecord(
                         id = newSightingRef.id,
                         ownerId = currentUser.uid,
@@ -224,8 +274,12 @@ private fun SightingScreenContent(
                         locationLng = locationLng,
                         estimatedFeatures = estimatedFeatures,
                         clothingAppearance = clothingAppearance,
-                        photoUrl = photoUrl,
-                        photoStoragePath = storagePath,
+                        photoUrl = uploadResult.photoUrl,
+                        photoStoragePath = uploadResult.photoStoragePath,
+                        thumbnailUrl = uploadResult.thumbnailUrl,
+                        thumbnailStoragePath = uploadResult.thumbnailStoragePath,
+                        matchedFaceUrl = uploadResult.matchedFaceUrl,
+                        matchedFaceStoragePath = uploadResult.matchedFaceStoragePath,
                         embedding = matchResult.faceFeature,
                         status = SightingStatus.LINKED.name,
                         linkedMissingPersonId = matchedMP.id,
@@ -233,7 +287,7 @@ private fun SightingScreenContent(
                         matchLevel = "MATCH"
                     )
                     batch.set(newSightingRef, sightingData)
-
+ 
                     val notificationRef = db.collection("Notifications").document()
                     val notification = NotificationRecord(
                         id = notificationRef.id,
@@ -241,18 +295,20 @@ private fun SightingScreenContent(
                         senderId = currentUser.uid,
                         title = "🚨 Potential Match Found!",
                         message = "Someone reported seeing a person matching your profile at ${sightingLocation.ifBlank { "an unknown location" }}.",
-                        photoUrl = photoUrl,
+                        photoUrl = uploadResult.photoUrl,
+                        thumbnailUrl = uploadResult.thumbnailUrl,
+                        matchedFaceUrl = uploadResult.matchedFaceUrl,
                         relatedSightingId = sightingData.id,
                         relatedMissingPersonId = matchedMP.id
                     )
                     batch.set(notificationRef, notification)
-
+ 
                     val mpRef = db.collection("MissingPersons").document(matchedMP.id)
                     batch.update(mpRef, "status", MPStatus.PENDING_VERIFICATION.name)
                     batch.update(mpRef, "linkedSightingIds", FieldValue.arrayUnion(sightingData.id))
-
+ 
                     batch.commit().await()
-
+ 
                     withContext(Dispatchers.Main) {
                         isUploading = false
                         Toast.makeText(
@@ -267,13 +323,19 @@ private fun SightingScreenContent(
                     uploadedPath?.let {
                         StorageRepository.deleteByPath(it)
                     }
+                    uploadedThumbnailPath?.let {
+                        StorageRepository.deleteByPath(it)
+                    }
+                    uploadedFacePath?.let {
+                        StorageRepository.deleteByPath(it)
+                    }
                     withContext(Dispatchers.Main) {
                         isUploading = false
                         hasAutoUploaded = false
                         Toast.makeText(
                             context,
-                            "Auto-upload failed: ${e.message ?: "Unknown"}. Use Retry below.",
-                            Toast.LENGTH_LONG
+                            "💥 Auto-upload failed: ${e.message}",
+                            Toast.LENGTH_SHORT
                         ).show()
                     }
                 }
@@ -612,12 +674,13 @@ private fun SightingScreenContent(
                                     }
                                 }
 
-                                val finalResult = FaceScanResult(
-                                    isMatch = bestMatch != null,
-                                    matchedPerson = bestMatch,
-                                    similarity = bestSimilarity,
-                                    faceFeature = currentFeature.map { it.toDouble() }
-                                )
+                                 val finalResult = FaceScanResult(
+                                     isMatch = bestMatch != null,
+                                     matchedPerson = bestMatch,
+                                     similarity = bestSimilarity,
+                                     faceFeature = currentFeature.map { it.toDouble() },
+                                     croppedFace = crop
+                                 )
 
                                 currentResults.add(finalResult)
 
@@ -757,6 +820,18 @@ private fun SightingScreenContent(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
+                                result.croppedFace?.let { faceBitmap ->
+                                    Image(
+                                        bitmap = faceBitmap.asImageBitmap(),
+                                        contentDescription = "Face Preview",
+                                        modifier = Modifier
+                                            .size(60.dp)
+                                            .clip(RoundedCornerShape(8.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                }
+
                                 Column(modifier = Modifier.weight(1f)) {
                                     val (titleText, titleColor) = if (result.isMatch) {
                                         "⚠️ MATCH FOUND: ${result.matchedPerson?.name ?: "Unknown"}" to Color.Red
@@ -841,6 +916,7 @@ private fun SightingScreenContent(
                                                 context = context,
                                                 currentUser = currentUser,
                                                 selectedBitmap = selectedBitmap!!,
+                                                faceBitmap = result.croppedFace,
                                                 sightingDate = sightingDate,
                                                 sightingLocation = sightingLocation,
                                                 locationLat = locationLat,
@@ -908,6 +984,7 @@ private suspend fun uploadSighting(
     context: android.content.Context,
     currentUser: FirebaseUser,
     selectedBitmap: Bitmap,
+    faceBitmap: Bitmap?,
     sightingDate: String,
     sightingLocation: String,
     locationLat: Double?,
@@ -921,13 +998,18 @@ private suspend fun uploadSighting(
     onDone: (Boolean) -> Unit
 ) {
     var uploadedPath: String? = null
+    var uploadedThumbnailPath: String? = null
+    var uploadedFacePath: String? = null
     try {
-        val (photoUrl, storagePath) = StorageRepository.uploadBitmap(
-            bitmap = selectedBitmap,
+        val uploadResult = StorageRepository.uploadBitmapWithFace(
+            sightingBitmap = selectedBitmap,
+            faceBitmap = faceBitmap,
             folder = "sightings",
             userId = currentUser.uid
         )
-        uploadedPath = storagePath
+        uploadedPath = uploadResult.photoStoragePath
+        uploadedThumbnailPath = uploadResult.thumbnailStoragePath
+        uploadedFacePath = uploadResult.matchedFaceStoragePath
 
         val db = FirebaseFirestore.getInstance()
         val newRef = db.collection("Sightings").document()
@@ -942,8 +1024,12 @@ private suspend fun uploadSighting(
             locationLng = locationLng,
             estimatedFeatures = estimatedFeatures,
             clothingAppearance = clothingAppearance,
-            photoUrl = photoUrl,
-            photoStoragePath = storagePath,
+            photoUrl = uploadResult.photoUrl,
+            photoStoragePath = uploadResult.photoStoragePath,
+            thumbnailUrl = uploadResult.thumbnailUrl,
+            thumbnailStoragePath = uploadResult.thumbnailStoragePath,
+            matchedFaceUrl = uploadResult.matchedFaceUrl,
+            matchedFaceStoragePath = uploadResult.matchedFaceStoragePath,
             embedding = faceFeature,
             status = if (isMatch) SightingStatus.LINKED.name else SightingStatus.PENDING.name,
             linkedMissingPersonId = matchedPersonId,
@@ -960,6 +1046,12 @@ private suspend fun uploadSighting(
     } catch (e: Exception) {
         Log.e("FaceDebug", "uploadSighting failed", e)
         uploadedPath?.let {
+            StorageRepository.deleteByPath(it)
+        }
+        uploadedThumbnailPath?.let {
+            StorageRepository.deleteByPath(it)
+        }
+        uploadedFacePath?.let {
             StorageRepository.deleteByPath(it)
         }
         withContext(Dispatchers.Main) {

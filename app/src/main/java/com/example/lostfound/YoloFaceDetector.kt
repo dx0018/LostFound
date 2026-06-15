@@ -56,7 +56,7 @@ class YoloFaceDetector(context: Context, modelName: String = "yolov11n-face_floa
         return applyNMS(recognitions)
     }
 
-    private fun applyNMS(recognitions: List<Recognition>, iouThreshold: Float = 0.4f): List<Recognition> {
+    fun applyNMS(recognitions: List<Recognition>, iouThreshold: Float = 0.4f): List<Recognition> {
         val sortedList = recognitions.sortedByDescending { it.confidence }
         val selected = mutableListOf<Recognition>()
 
@@ -75,7 +75,7 @@ class YoloFaceDetector(context: Context, modelName: String = "yolov11n-face_floa
         return selected
     }
 
-    private fun calculateIoU(box1: RectF, box2: RectF): Float {
+    fun calculateIoU(box1: RectF, box2: RectF): Float {
         val intersectionLeft = maxOf(box1.left, box2.left)
         val intersectionTop = maxOf(box1.top, box2.top)
         val intersectionRight = minOf(box1.right, box2.right)
@@ -85,7 +85,9 @@ class YoloFaceDetector(context: Context, modelName: String = "yolov11n-face_floa
         val box1Area = (box1.right - box1.left) * (box1.bottom - box1.top)
         val box2Area = (box2.right - box2.left) * (box2.bottom - box2.top)
 
-        return intersectionArea / (box1Area + box2Area - intersectionArea)
+        val denominator = box1Area + box2Area - intersectionArea
+        if (denominator <= 0f) return 0f
+        return intersectionArea / denominator
     }
 
     private fun loadModelFile(context: Context, modelName: String): MappedByteBuffer {

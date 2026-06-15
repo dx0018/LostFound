@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -29,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import coil.compose.AsyncImage
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
@@ -56,8 +58,29 @@ private fun SetupProfileScreenContent(
 
     var name by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
+    var profilePicUrl by remember { mutableStateOf("") }
     var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isSaving by remember { mutableStateOf(false) }
+    var isInitialLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(currentUser.uid) {
+        try {
+            val doc = FirebaseFirestore.getInstance()
+                .collection("Users")
+                .document(currentUser.uid)
+                .get()
+                .await()
+            if (doc.exists()) {
+                name = doc.getString("name").orEmpty()
+                phone = doc.getString("phone").orEmpty()
+                profilePicUrl = doc.getString("profilePicUrl").orEmpty()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            isInitialLoading = false
+        }
+    }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -93,22 +116,49 @@ private fun SetupProfileScreenContent(
         }
     }
 
+    if (isInitialLoading) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+        }
+        return
+    }
+
+    val canNavigateBack = navController.previousBackStackEntry != null
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(modifier = Modifier.height(32.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentHeight(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (canNavigateBack) {
+                IconButton(onClick = { navController.popBackStack() }) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "Back",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.weight(1f))
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Complete Your Profile",
+            text = if (canNavigateBack) "Edit Profile Info" else "Complete Your Profile",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
 
         Text(
-            text = "We need a few details to verify your identity.",
+            text = if (canNavigateBack) "Update your profile details below." else "We need a few details to verify your identity.",
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
@@ -125,6 +175,13 @@ private fun SetupProfileScreenContent(
             if (selectedBitmap != null) {
                 Image(
                     bitmap = selectedBitmap!!.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else if (profilePicUrl.isNotBlank()) {
+                AsyncImage(
+                    model = profilePicUrl,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
@@ -147,7 +204,7 @@ private fun SetupProfileScreenContent(
         }
 
         Text(
-            text = "(Optional) Tap to add photo",
+            text = "(Optional) Tap to change photo",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(top = 8.dp)
@@ -193,7 +250,7 @@ private fun SetupProfileScreenContent(
                     var uploadedPath: String? = null
 
                     try {
-                        var profilePicUrl = ""
+                        var currentPicUrl = profilePicUrl
 
                         if (selectedBitmap != null) {
                             val (url, storagePath) = StorageRepository.uploadBitmap(
@@ -203,7 +260,7 @@ private fun SetupProfileScreenContent(
                                 maxDim = 400,
                                 quality = 80
                             )
-                            profilePicUrl = url
+                            currentPicUrl = url
                             uploadedPath = storagePath
                         }
 
@@ -212,7 +269,7 @@ private fun SetupProfileScreenContent(
                             email = currentUser.email.orEmpty(),
                             name = name,
                             phone = phone,
-                            profilePicUrl = profilePicUrl
+                            profilePicUrl = currentPicUrl
                         )
 
                         FirebaseFirestore.getInstance()
@@ -228,9 +285,13 @@ private fun SetupProfileScreenContent(
                                 Toast.LENGTH_SHORT
                             ).show()
 
-                            navController.navigate("main") {
-                                popUpTo("setup_profile") {
-                                    inclusive = true
+                            if (canNavigateBack) {
+                                navController.popBackStack()
+                            } else {
+                                navController.navigate("main") {
+                                    popUpTo("setup_profile") {
+                                        inclusive = true
+                                    }
                                 }
                             }
                         }
@@ -262,7 +323,7 @@ private fun SetupProfileScreenContent(
                 )
             } else {
                 Text(
-                    text = "Save & Continue",
+                    text = if (canNavigateBack) "Save Changes" else "Save & Continue",
                     fontWeight = FontWeight.Bold
                 )
             }

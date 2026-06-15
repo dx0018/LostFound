@@ -22,6 +22,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 fun MainScreen(
     currentUserId: String,
     userEmail: String,
+    onNavigateToEditProfile: () -> Unit = {},
     onLogout: () -> Unit = {}
 ) {
     val navController = rememberNavController()
@@ -133,8 +134,10 @@ fun MainScreen(
 
             composable(Screen.Profile.route) {
                 ProfileScreen(
+                    currentUserId = currentUserId,
                     userEmail = userEmail,
                     onNavigateBack = { navController.popBackStack() },
+                    onNavigateToEditProfile = onNavigateToEditProfile,
                     onLogout = onLogout
                 )
             }

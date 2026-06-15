@@ -73,6 +73,8 @@ data class MapMarkerInfo(
     val title: String,
     val isMissingPerson: Boolean,
     val photoUrl: String = "",     // 🆕 改为 URL
+    val thumbnailUrl: String = "",
+    val matchedFaceUrl: String = "",
     val age: String = "",
     val gender: String = "",
     val status: String = "",
@@ -194,6 +196,8 @@ fun HomeScreen(
                         id = item.person.id, latLng = latLng,
                         title = item.person.name, isMissingPerson = true,
                         photoUrl = item.person.photoUrl,    // 🆕
+                        thumbnailUrl = item.person.thumbnailUrl,
+                        matchedFaceUrl = "",
                         age = item.person.age, gender = item.person.gender,
                         status = item.person.status,
                         date = item.person.lastSeenDate,
@@ -203,6 +207,8 @@ fun HomeScreen(
                         id = item.sighting.id, latLng = latLng,
                         title = "Unverified Sighting", isMissingPerson = false,
                         photoUrl = item.sighting.photoUrl,  // 🆕
+                        thumbnailUrl = item.sighting.thumbnailUrl,
+                        matchedFaceUrl = item.sighting.matchedFaceUrl,
                         status = "PENDING",
                         date = item.sighting.sightingDate,
                         locationName = item.sighting.location
@@ -227,9 +233,9 @@ fun HomeScreen(
         for (marker in mapMarkers) {
             val photoKey = "PHOTO_${marker.id}"
 
-            if (!markerIconCache.containsKey(photoKey) && marker.photoUrl.isNotBlank()) {
+            if (!markerIconCache.containsKey(photoKey) && (marker.matchedFaceUrl.isNotBlank() || marker.thumbnailUrl.isNotBlank() || marker.photoUrl.isNotBlank())) {
                 launch(Dispatchers.IO) {
-                    val bitmap = MapMarkerUtils.downloadBitmapFromUrl(context, marker.photoUrl)
+                    val bitmap = MapMarkerUtils.downloadBitmapFromUrl(context, marker.matchedFaceUrl.ifBlank { marker.thumbnailUrl.ifBlank { marker.photoUrl } })
                     val color = if (marker.isMissingPerson) {
                         MapMarkerUtils.COLOR_MISSING
                     } else {
@@ -577,7 +583,10 @@ private fun SheetBody(
                                 onClick = { onNavigateToTimeline(item.person.id) }
                             )
                         is FeedItem.SightingItem ->
-                            SightingCard(sighting = item.sighting)
+                            SightingCard(
+                                sighting = item.sighting,
+                                onClick = { onNavigateToTimeline(item.sighting.id) }
+                            )
                     }
                 }
             }
@@ -713,9 +722,9 @@ fun MapInfoWindowContent(marker: MapMarkerInfo) {
         elevation = CardDefaults.cardElevation(8.dp)
     ) {
         Column {
-            if (marker.photoUrl.isNotBlank()) {
+            if (marker.matchedFaceUrl.isNotBlank() || marker.thumbnailUrl.isNotBlank() || marker.photoUrl.isNotBlank()) {
                 AsyncImage(
-                    model = marker.photoUrl,
+                    model = marker.matchedFaceUrl.ifBlank { marker.thumbnailUrl.ifBlank { marker.photoUrl } },
                     contentDescription = null,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -822,9 +831,9 @@ fun MissingPersonCard(person: MissingPerson, onClick: () -> Unit) {
                     .clip(RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                if (person.photoUrl.isNotBlank()) {
+                if (person.thumbnailUrl.isNotBlank() || person.photoUrl.isNotBlank()) {
                     AsyncImage(
-                        model = person.photoUrl,
+                        model = person.thumbnailUrl.ifBlank { person.photoUrl },
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
@@ -943,18 +952,11 @@ private fun InfoChip(label: String) {
 }
 
 @Composable
-fun SightingCard(sighting: SightingRecord) {
-    val context = LocalContext.current
+fun SightingCard(sighting: SightingRecord, onClick: () -> Unit) {
     Card(
         modifier  = Modifier
             .fillMaxWidth()
-            .clickable {
-                Toast.makeText(
-                    context,
-                    "Orphan clue — awaiting AI family match.",
-                    Toast.LENGTH_SHORT
-                ).show()
-            },
+            .clickable { onClick() },
         shape     = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         colors    = CardDefaults.cardColors(containerColor = Color(0xFFF0F4FF))
@@ -969,9 +971,9 @@ fun SightingCard(sighting: SightingRecord) {
                     .clip(RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                if (sighting.photoUrl.isNotBlank()) {
+                if (sighting.matchedFaceUrl.isNotBlank() || sighting.thumbnailUrl.isNotBlank() || sighting.photoUrl.isNotBlank()) {
                     AsyncImage(
-                        model = sighting.photoUrl,
+                        model = sighting.matchedFaceUrl.ifBlank { sighting.thumbnailUrl.ifBlank { sighting.photoUrl } },
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
@@ -1004,7 +1006,7 @@ fun SightingCard(sighting: SightingRecord) {
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "PENDING",
+                        sighting.status.uppercase(),
                         color      = Color.White,
                         style      = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,

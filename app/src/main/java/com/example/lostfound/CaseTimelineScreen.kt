@@ -30,17 +30,23 @@ sealed class TimelineEvent {
     abstract val timestamp: Long
     abstract val location: String
     abstract val photoUrl: String   // 🆕 改为 photoUrl
+    abstract val thumbnailUrl: String
+    abstract val matchedFaceUrl: String
 
     data class CaseOpened(val person: MissingPerson) : TimelineEvent() {
         override val timestamp = person.timestamp
         override val location = person.lastSeenLocation
         override val photoUrl = person.photoUrl
+        override val thumbnailUrl = person.thumbnailUrl
+        override val matchedFaceUrl = ""
     }
 
     data class SightingConfirmed(val sighting: SightingRecord) : TimelineEvent() {
         override val timestamp = sighting.timestamp
         override val location = sighting.location
         override val photoUrl = sighting.photoUrl
+        override val thumbnailUrl = sighting.thumbnailUrl
+        override val matchedFaceUrl = sighting.matchedFaceUrl
     }
 }
 
@@ -73,6 +79,38 @@ fun CaseTimelineScreen(missingPersonId: String, onNavigateBack: () -> Unit) {
                 sightings.forEach { combinedList.add(TimelineEvent.SightingConfirmed(it)) }
 
                 timelineEvents = combinedList.sortedBy { it.timestamp }
+            } else {
+                // If it is not a missing person, it might be an orphan/pending sighting ID!
+                val sightingSnapshot = db.collection("Sightings").document(missingPersonId).get().await()
+                val sighting = sightingSnapshot.toObject(SightingRecord::class.java)
+
+                if (sighting != null) {
+                    if (!sighting.linkedMissingPersonId.isNullOrBlank()) {
+                        // Redirect to the linked MissingPerson case timeline automatically!
+                        val linkedMpSnapshot = db.collection("MissingPersons")
+                            .document(sighting.linkedMissingPersonId!!).get().await()
+                        val linkedMp = linkedMpSnapshot.toObject(MissingPerson::class.java)
+                        if (linkedMp != null) {
+                            personName = linkedMp.name
+                            val sightings = db.collection("Sightings")
+                                .whereEqualTo("linkedMissingPersonId", linkedMp.id)
+                                .whereIn("status", listOf(SightingStatus.LINKED.name, SightingStatus.RESOLVED.name))
+                                .get().await().toObjects(SightingRecord::class.java)
+
+                            val combinedList = mutableListOf<TimelineEvent>()
+                            combinedList.add(TimelineEvent.CaseOpened(linkedMp))
+                            sightings.forEach { combinedList.add(TimelineEvent.SightingConfirmed(it)) }
+
+                            timelineEvents = combinedList.sortedBy { it.timestamp }
+                        }
+                    } else {
+                        // Render orphan timeline with single Sighting node
+                        personName = "Orphan Sighting Clue"
+                        timelineEvents = listOf(TimelineEvent.SightingConfirmed(sighting))
+                    }
+                } else {
+                    personName = "Unknown Case"
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -168,8 +206,19 @@ fun TimelineNode(event: TimelineEvent, isLast: Boolean) {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
+                    val titleText = if (event is TimelineEvent.CaseOpened) {
+                        "📍 Initial Report"
+                    } else {
+                        val sig = (event as TimelineEvent.SightingConfirmed).sighting
+                        if (sig.status == SightingStatus.PENDING.name) {
+                            "👁️ Sighting Submitted (Orphan Clue)"
+                        } else {
+                            "👁️ Confirmed Sighting"
+                        }
+                    }
+
                     Text(
-                        text = if (event is TimelineEvent.CaseOpened) "📍 Initial Report" else "👁️ Confirmed Sighting",
+                        text = titleText,
                         fontWeight = FontWeight.Bold, color = dotColor
                     )
                     Spacer(modifier = Modifier.height(4.dp))
@@ -177,10 +226,12 @@ fun TimelineNode(event: TimelineEvent, isLast: Boolean) {
 
                     Spacer(modifier = Modifier.height(8.dp))
 
+                    val imageModel = event.matchedFaceUrl.ifBlank { event.thumbnailUrl.ifBlank { event.photoUrl } }
+
                     // 🆕 Coil 异步加载 URL
-                    if (event.photoUrl.isNotBlank()) {
+                    if (imageModel.isNotBlank()) {
                         AsyncImage(
-                            model = event.photoUrl,
+                            model = imageModel,
                             contentDescription = null,
                             modifier = Modifier
                                 .fillMaxWidth()
