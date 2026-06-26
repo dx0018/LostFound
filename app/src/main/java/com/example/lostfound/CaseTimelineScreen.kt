@@ -59,7 +59,7 @@ fun CaseTimelineScreen(missingPersonId: String, onNavigateBack: () -> Unit) {
 
     LaunchedEffect(missingPersonId) {
         try {
-            val db = FirebaseFirestore.getInstance()
+            val db = FirebaseFirestore.getInstance("lostfound")
 
             val mpSnapshot = db.collection("MissingPersons").document(missingPersonId).get().await()
             val mp = mpSnapshot.toObject(MissingPerson::class.java)

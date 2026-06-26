@@ -807,7 +807,7 @@ fun ReportScreenContent(
                             onClick = {
                                 scope.launch(Dispatchers.IO) {
                                     try {
-                                        val db = FirebaseFirestore.getInstance()
+                                        val db = FirebaseFirestore.getInstance("lostfound")
 
                                         db.runTransaction { transaction ->
                                             val mpRef = db.collection("MissingPersons")
@@ -1145,7 +1145,7 @@ private suspend fun executePublicationSequence(
         uploadedPath = uploadResult.photoStoragePath
         uploadedThumbnailPath = uploadResult.thumbnailStoragePath
 
-        val db = FirebaseFirestore.getInstance()
+        val db = FirebaseFirestore.getInstance("lostfound")
         onProgressUpdate("💾 Saving to Missing Persons DB...")
 
         val newMpRef = db.collection("MissingPersons").document()

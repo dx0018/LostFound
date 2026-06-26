@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
                     }
                 )
             }
-            FirebaseFirestore.getInstance().firestoreSettings = settings
+            FirebaseFirestore.getInstance("lostfound").firestoreSettings = settings
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -102,11 +102,41 @@ fun RootNavigation(
 
     var authReady by remember { mutableStateOf(false) }
     var currentUser by remember { mutableStateOf<FirebaseUser?>(null) }
+    var isProfileChecked by remember { mutableStateOf(false) }
+    var hasProfile by remember { mutableStateOf(false) }
 
     DisposableEffect(auth) {
         val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
-            currentUser = firebaseAuth.currentUser
-            authReady = true
+            val prevUser = currentUser
+            val newUser = firebaseAuth.currentUser
+            currentUser = newUser
+
+            if (newUser == null) {
+                isProfileChecked = false
+                hasProfile = false
+                authReady = true
+            } else if (prevUser?.uid != newUser.uid) {
+                // User logged in, query Firestore to check if user profile exists
+                isProfileChecked = false
+                authReady = false
+                FirebaseFirestore.getInstance("lostfound")
+                    .collection("Users")
+                    .document(newUser.uid)
+                    .get()
+                    .addOnSuccessListener { document ->
+                        hasProfile = document.exists()
+                        isProfileChecked = true
+                        authReady = true
+                    }
+                    .addOnFailureListener {
+                        // Safe fallback: assume profile doesn't exist so they are prompted to check/setup
+                        hasProfile = false
+                        isProfileChecked = true
+                        authReady = true
+                    }
+            } else {
+                authReady = true
+            }
         }
         auth.addAuthStateListener(listener)
         onDispose {
@@ -130,7 +160,12 @@ fun RootNavigation(
         return
     }
 
-    val startDestination = if (currentUser != null) "main" else "login"
+    val startDestination = when {
+        currentUser == null -> "login"
+        !isProfileChecked -> "login" // backup fallback, but authReady should prevent reaching here
+        hasProfile -> "main"
+        else -> "setup_profile"
+    }
 
     NavHost(
         navController = rootNavController,
@@ -145,7 +180,12 @@ fun RootNavigation(
         }
 
         composable("setup_profile") {
-            SetupProfileScreen(navController = rootNavController)
+            SetupProfileScreen(
+                navController = rootNavController,
+                onProfileCreated = {
+                    hasProfile = true
+                }
+            )
         }
 
         composable("main") {

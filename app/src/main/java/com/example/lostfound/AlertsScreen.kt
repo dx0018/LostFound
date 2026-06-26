@@ -116,7 +116,7 @@ fun NotificationsTab(currentUserId: String) {
     var selectedNote by remember { mutableStateOf<NotificationRecord?>(null) }
 
     DisposableEffect(currentUserId) {
-        val listener = FirebaseFirestore.getInstance()
+        val listener = FirebaseFirestore.getInstance("lostfound")
             .collection("Notifications")
             .whereEqualTo("receiverId", currentUserId)
             .addSnapshotListener { snapshot, error ->
@@ -159,7 +159,7 @@ fun NotificationsTab(currentUserId: String) {
                 NotificationCard(note = note) {
                     selectedNote = note
                     if (!note.isRead) {
-                        FirebaseFirestore.getInstance()
+                        FirebaseFirestore.getInstance("lostfound")
                             .collection("Notifications")
                             .document(note.id)
                             .update("isRead", true)
@@ -183,7 +183,7 @@ fun NotificationsTab(currentUserId: String) {
                             onClick = {
                                 scope.launch(Dispatchers.IO) {
                                     try {
-                                        val db = FirebaseFirestore.getInstance()
+                                        val db = FirebaseFirestore.getInstance("lostfound")
 
                                         db.collection("Sightings")
                                             .document(note.relatedSightingId)
@@ -249,7 +249,7 @@ fun NotificationsTab(currentUserId: String) {
                             onClick = {
                                 scope.launch(Dispatchers.IO) {
                                     try {
-                                        val db = FirebaseFirestore.getInstance()
+                                        val db = FirebaseFirestore.getInstance("lostfound")
 
                                         val sightingRef = db.collection("Sightings").document(note.relatedSightingId)
                                         val sightingSnap = sightingRef.get().await()
@@ -372,7 +372,7 @@ fun MyRecordsTab(
     var selectedSighting by remember { mutableStateOf<SightingRecord?>(null) }
 
     DisposableEffect(currentUserId) {
-        val db = FirebaseFirestore.getInstance()
+        val db = FirebaseFirestore.getInstance("lostfound")
 
         val personListener = db.collection("MissingPersons")
             .whereEqualTo("ownerId", currentUserId)
@@ -504,7 +504,7 @@ fun MyRecordsTab(
                             onClick = {
                                 scope.launch(Dispatchers.IO) {
                                     try {
-                                        val db = FirebaseFirestore.getInstance()
+                                        val db = FirebaseFirestore.getInstance("lostfound")
                                         val batch = db.batch()
 
                                         batch.update(
@@ -552,7 +552,7 @@ fun MyRecordsTab(
                             onClick = {
                                 scope.launch(Dispatchers.IO) {
                                     try {
-                                        FirebaseFirestore.getInstance()
+                                        FirebaseFirestore.getInstance("lostfound")
                                             .collection("MissingPersons")
                                             .document(mp.id)
                                             .update("status", MPStatus.CANCELLED.name)
@@ -627,7 +627,7 @@ fun MyRecordsTab(
                         onClick = {
                             scope.launch(Dispatchers.IO) {
                                 try {
-                                    val db = FirebaseFirestore.getInstance()
+                                    val db = FirebaseFirestore.getInstance("lostfound")
                                     val sightingRef = db.collection("Sightings").document(sighting.id)
                                     val sightingSnap = sightingRef.get().await()
                                     val sightingData = sightingSnap.toObject(SightingRecord::class.java)

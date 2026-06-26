@@ -28,8 +28,6 @@ class YoloFaceDetector(context: Context, modelName: String = "yolov11n-face_floa
 
         val recognitions = mutableListOf<Recognition>()
 
-        // 💡 核心修复：因为模型输出的是 0.0~1.0 的百分比（归一化坐标），
-        // 所以我们需要直接乘以原图的像素宽度和高度，将其还原为真实的像素点！
         val imgWidth = bitmap.width.toFloat()
         val imgHeight = bitmap.height.toFloat()
 
@@ -37,7 +35,7 @@ class YoloFaceDetector(context: Context, modelName: String = "yolov11n-face_floa
             val confidence = output[0][4][i]
 
             if (confidence > 0.5f) {
-                val cx = output[0][0][i] // 比如: 0.5 (表示在中心)
+                val cx = output[0][0][i]
                 val cy = output[0][1][i]
                 val w = output[0][2][i]
                 val h = output[0][3][i]

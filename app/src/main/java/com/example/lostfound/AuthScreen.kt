@@ -32,7 +32,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 fun LoginScreen(navController: NavController) {
     val context = LocalContext.current
     val auth = remember { FirebaseAuth.getInstance() }
-    val db = remember { FirebaseFirestore.getInstance() }
+    val db = remember { FirebaseFirestore.getInstance("lostfound") }
 
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -161,7 +161,9 @@ fun LoginScreen(navController: NavController) {
         OutlinedButton(
             onClick = {
                 isLoading = true
-                googleAuthLauncher.launch(googleSignInClient.signInIntent)
+                googleSignInClient.signOut().addOnCompleteListener {
+                    googleAuthLauncher.launch(googleSignInClient.signInIntent)
+                }
             },
             modifier = Modifier.fillMaxWidth().height(50.dp), enabled = !isLoading
         ) {

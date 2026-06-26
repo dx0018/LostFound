@@ -36,7 +36,7 @@ fun MainScreen(
     DisposableEffect(currentUserId) {
         if (currentUserId.isBlank()) return@DisposableEffect onDispose {}
 
-        val listener = FirebaseFirestore.getInstance()
+        val listener = FirebaseFirestore.getInstance("lostfound")
             .collection("Notifications")
             .whereEqualTo("receiverId", currentUserId)
             .addSnapshotListener { snapshot, error ->

@@ -39,11 +39,15 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SetupProfileScreen(navController: NavController) {
+fun SetupProfileScreen(
+    navController: NavController,
+    onProfileCreated: () -> Unit = {}
+) {
     RequireAuth { user ->
         SetupProfileScreenContent(
             navController = navController,
-            currentUser = user
+            currentUser = user,
+            onProfileCreated = onProfileCreated
         )
     }
 }
@@ -51,7 +55,8 @@ fun SetupProfileScreen(navController: NavController) {
 @Composable
 private fun SetupProfileScreenContent(
     navController: NavController,
-    currentUser: FirebaseUser
+    currentUser: FirebaseUser,
+    onProfileCreated: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -65,7 +70,7 @@ private fun SetupProfileScreenContent(
 
     LaunchedEffect(currentUser.uid) {
         try {
-            val doc = FirebaseFirestore.getInstance()
+            val doc = FirebaseFirestore.getInstance("lostfound")
                 .collection("Users")
                 .document(currentUser.uid)
                 .get()
@@ -272,7 +277,7 @@ private fun SetupProfileScreenContent(
                             profilePicUrl = currentPicUrl
                         )
 
-                        FirebaseFirestore.getInstance()
+                        FirebaseFirestore.getInstance("lostfound")
                             .collection("Users")
                             .document(currentUser.uid)
                             .set(userProfile)
@@ -285,15 +290,16 @@ private fun SetupProfileScreenContent(
                                 Toast.LENGTH_SHORT
                             ).show()
 
-                            if (canNavigateBack) {
-                                navController.popBackStack()
-                            } else {
-                                navController.navigate("main") {
-                                    popUpTo("setup_profile") {
-                                        inclusive = true
-                                    }
-                                }
-                            }
+                             if (canNavigateBack) {
+                                 navController.popBackStack()
+                             } else {
+                                 onProfileCreated()
+                                 navController.navigate("main") {
+                                     popUpTo("setup_profile") {
+                                         inclusive = true
+                                     }
+                                 }
+                             }
                         }
                     } catch (e: Exception) {
                         uploadedPath?.let {

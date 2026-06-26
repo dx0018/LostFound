@@ -36,7 +36,7 @@ fun ProfileScreen(
     LaunchedEffect(currentUserId) {
         if (currentUserId.isNotBlank()) {
             try {
-                val document = FirebaseFirestore.getInstance()
+                val document = FirebaseFirestore.getInstance("lostfound")
                     .collection("Users")
                     .document(currentUserId)
                     .get()

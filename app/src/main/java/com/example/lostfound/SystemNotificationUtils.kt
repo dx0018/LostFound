@@ -45,7 +45,7 @@ object SystemNotificationUtils {
         isListening = false
         listeningUserId = currentUserId
 
-        val db = FirebaseFirestore.getInstance()
+        val db = FirebaseFirestore.getInstance("lostfound")
 
         listenerRegistration = db.collection("Notifications")
             .whereEqualTo("receiverId", currentUserId)

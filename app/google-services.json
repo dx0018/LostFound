@@ -1,6 +1,7 @@
 {
   "project_info": {
     "project_number": "921617671503",
+    "firebase_url": "https://final-year-project-1527e-default-rtdb.asia-southeast1.firebasedatabase.app",
     "project_id": "final-year-project-1527e",
     "storage_bucket": "final-year-project-1527e.firebasestorage.app"
   },
@@ -13,6 +14,14 @@
         }
       },
       "oauth_client": [
+        {
+          "client_id": "921617671503-co687ivni2d7njc87ri7he1q583vff6t.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.lostfound",
+            "certificate_hash": "a45684e2feb685e5bb9168c244bc581486b62e15"
+          }
+        },
         {
           "client_id": "921617671503-qcgqmgfv5vs7joog52paobiv7qhev4ru.apps.googleusercontent.com",
           "client_type": 3

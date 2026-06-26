@@ -1,5 +1,7 @@
 package com.example.lostfound
 
+import com.google.firebase.firestore.PropertyName
+
 // ==========================================
 // 1. 状态机定义 (State Machine Enums)
 // ==========================================
@@ -94,19 +96,21 @@ data class SightingRecord(
 )
 
 data class NotificationRecord(
-    val id: String = "",
-    val receiverId: String = "",
-    val senderId: String = "",
-    val title: String = "",
-    val message: String = "",
-    val photoUrl: String = "",
-    val thumbnailUrl: String = "",
-    val matchedFaceUrl: String = "",
-    val relatedSightingId: String = "",
-    val relatedMissingPersonId: String = "",
-    val type: String = "SIGHTING_MATCH",
-    val isRead: Boolean = false,
-    val timestamp: Long = System.currentTimeMillis()
+    var id: String = "",
+    var receiverId: String = "",
+    var senderId: String = "",
+    var title: String = "",
+    var message: String = "",
+    var photoUrl: String = "",
+    var thumbnailUrl: String = "",
+    var matchedFaceUrl: String = "",
+    var relatedSightingId: String = "",
+    var relatedMissingPersonId: String = "",
+    var type: String = "SIGHTING_MATCH",
+    @get:PropertyName("isRead")
+    @set:PropertyName("isRead")
+    var isRead: Boolean = false,
+    var timestamp: Long = System.currentTimeMillis()
 )
 
 data class UserProfile(

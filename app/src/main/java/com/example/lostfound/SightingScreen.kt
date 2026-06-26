@@ -200,7 +200,7 @@ private fun SightingScreenContent(
             // 🆕 Debounce check: query for recent sightings of the same missing person by this user within 10 mins & 100m
             var isDuplicate = false
             try {
-                val db = FirebaseFirestore.getInstance()
+                val db = FirebaseFirestore.getInstance("lostfound")
                 val tenMinutesAgo = System.currentTimeMillis() - (10 * 60 * 1000)
                 val recentSightingsSnap = db.collection("Sightings")
                     .whereEqualTo("linkedMissingPersonId", matchedMP.id)
@@ -259,7 +259,7 @@ private fun SightingScreenContent(
                     uploadedThumbnailPath = uploadResult.thumbnailStoragePath
                     uploadedFacePath = uploadResult.matchedFaceStoragePath
  
-                    val db = FirebaseFirestore.getInstance()
+                    val db = FirebaseFirestore.getInstance("lostfound")
                     val batch = db.batch()
  
                     val newSightingRef = db.collection("Sightings").document()
@@ -580,7 +580,7 @@ private fun SightingScreenContent(
                     scanResults = emptyList()
 
                     scope.launch(Dispatchers.Default) {
-                        val db = FirebaseFirestore.getInstance()
+                        val db = FirebaseFirestore.getInstance("lostfound")
                         val yolo = YoloFaceDetector(context)
                         val extractor = MobileFaceNetExtractor(context)
                         val highAccuracyOpts = FaceDetectorOptions.Builder()
@@ -1011,7 +1011,7 @@ private suspend fun uploadSighting(
         uploadedThumbnailPath = uploadResult.thumbnailStoragePath
         uploadedFacePath = uploadResult.matchedFaceStoragePath
 
-        val db = FirebaseFirestore.getInstance()
+        val db = FirebaseFirestore.getInstance("lostfound")
         val newRef = db.collection("Sightings").document()
         val confidencePercent = (similarity * 100).roundToInt()
 

@@ -135,8 +135,8 @@ object ImageUtils {
         )
 
         val eyeAngleRad = atan2(
-            rightEye.y - leftEye.y,
-            rightEye.x - leftEye.x
+            leftEye.y - rightEye.y,
+            leftEye.x - rightEye.x
         )
         val eyeAngleDeg = Math.toDegrees(eyeAngleRad.toDouble()).toFloat()
 
@@ -162,11 +162,11 @@ object ImageUtils {
         matrix.postScale(scale, scale, eyeMidPoint.x, eyeMidPoint.y)
         matrix.postRotate(-eyeAngleDeg, eyeMidPoint.x, eyeMidPoint.y)
 
-        val transformedLeftEye = floatArrayOf(leftEye.x, leftEye.y)
-        matrix.mapPoints(transformedLeftEye)
+        val transformedRightEye = floatArrayOf(rightEye.x, rightEye.y)
+        matrix.mapPoints(transformedRightEye)
 
-        val dx = targetLeftEyePos.x - transformedLeftEye[0]
-        val dy = targetLeftEyePos.y - transformedLeftEye[1]
+        val dx = targetLeftEyePos.x - transformedRightEye[0]
+        val dy = targetLeftEyePos.y - transformedRightEye[1]
         matrix.postTranslate(dx, dy)
 
         val finalBitmap = Bitmap.createBitmap(

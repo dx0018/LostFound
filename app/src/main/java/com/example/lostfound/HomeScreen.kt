@@ -119,7 +119,7 @@ fun HomeScreen(
     var searchQuery      by remember { mutableStateOf("") }
     var mapMarkers       by remember { mutableStateOf<List<MapMarkerInfo>>(emptyList()) }
     var hasCenteredMap   by remember { mutableStateOf(false) }
-    var selectedSighting by remember { mutableStateOf<MapMarkerInfo?>(null) }
+    var selectedMarkerInfo by remember { mutableStateOf<MapMarkerInfo?>(null) }
 
     val markerIconCache = remember { mutableStateMapOf<String, BitmapDescriptor>() }
 
@@ -132,7 +132,7 @@ fun HomeScreen(
     }
 
     DisposableEffect(Unit) {
-        val db = FirebaseFirestore.getInstance()
+        val db = FirebaseFirestore.getInstance("lostfound")
         val personListener = db.collection("MissingPersons")
             .whereIn("status", listOf(MPStatus.ACTIVE.name, MPStatus.PENDING_VERIFICATION.name))
             .addSnapshotListener { snapshot, error ->
@@ -335,17 +335,16 @@ fun HomeScreen(
                         Offset(0.5f, 0.5f)
                     }
 
-
-                MarkerInfoWindowContent(
-                    state  = MarkerState(position = marker.latLng),
-                    icon   = icon,
+                Marker(
+                    state = MarkerState(position = marker.latLng),
+                    icon = icon,
                     anchor = anchor,
-                    title  = marker.title,
-                    onInfoWindowClick = {
-                        if (marker.isMissingPerson) onNavigateToTimeline(marker.id)
-                        else selectedSighting = marker
+                    title = marker.title,
+                    onClick = {
+                        selectedMarkerInfo = marker
+                        true // consume click, don't show native info window
                     }
-                ) { MapInfoWindowContent(marker) }
+                )
             }
         }
 
@@ -464,8 +463,12 @@ fun HomeScreen(
         }
     }
 
-    selectedSighting?.let { sighting ->
-        SightingDetailDialog(sighting = sighting, onDismiss = { selectedSighting = null })
+    selectedMarkerInfo?.let { marker ->
+        MapItemDetailDialog(
+            marker = marker,
+            onDismiss = { selectedMarkerInfo = null },
+            onNavigateToTimeline = onNavigateToTimeline
+        )
     }
 }
 
@@ -599,9 +602,10 @@ private fun SheetBody(
 // ============================================================
 
 @Composable
-private fun SightingDetailDialog(
-    sighting:  MapMarkerInfo,
-    onDismiss: () -> Unit
+private fun MapItemDetailDialog(
+    marker: MapMarkerInfo,
+    onDismiss: () -> Unit,
+    onNavigateToTimeline: (String) -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -611,10 +615,10 @@ private fun SightingDetailDialog(
             elevation = CardDefaults.cardElevation(16.dp)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
-                if (sighting.photoUrl.isNotBlank()) {
-                    // 🆕 Coil 异步加载
+                val imageUrl = marker.matchedFaceUrl.ifBlank { marker.thumbnailUrl.ifBlank { marker.photoUrl } }
+                if (imageUrl.isNotBlank()) {
                     AsyncImage(
-                        model = sighting.photoUrl,
+                        model = imageUrl,
                         contentDescription = null,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -629,7 +633,10 @@ private fun SightingDetailDialog(
                             .height(220.dp)
                             .background(
                                 Brush.verticalGradient(
-                                    listOf(Color(0xFF1E88E5), Color(0xFF1565C0))
+                                    if (marker.isMissingPerson)
+                                        listOf(Color(0xFFE53935), Color(0xFFB71C1C))
+                                    else
+                                        listOf(Color(0xFF1E88E5), Color(0xFF1565C0))
                                 )
                             )
                             .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)),
@@ -644,12 +651,22 @@ private fun SightingDetailDialog(
                 }
 
                 Column(modifier = Modifier.padding(20.dp)) {
+                    val badgeColor = if (marker.isMissingPerson) {
+                        if (marker.status == "ACTIVE") ColorMissing else ColorPending
+                    } else {
+                        ColorSighting
+                    }
+                    val badgeText = if (marker.isMissingPerson) {
+                        "🚨 ${marker.status}"
+                    } else {
+                        "👁 Potential Sighting"
+                    }
                     Surface(
-                        color = ColorSighting,
+                        color = badgeColor,
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            "👁  Potential Sighting",
+                            badgeText,
                             color      = Color.White,
                             modifier   = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
                             style      = MaterialTheme.typography.labelMedium,
@@ -657,31 +674,57 @@ private fun SightingDetailDialog(
                         )
                     }
                     Spacer(Modifier.height(12.dp))
+                    
                     Text(
-                        "Unverified Community Report",
+                        marker.title,
                         style      = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(Modifier.height(16.dp))
-                    DetailRow("📍", "Location", sighting.locationName)
-                    Spacer(Modifier.height(10.dp))
-                    DetailRow("📅", "Reported on", sighting.date.ifBlank { "Unknown" })
+
+                    if (marker.isMissingPerson) {
+                        if (marker.age.isNotBlank()) {
+                            DetailRow("👤", "Age", "${marker.age} years old")
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        if (marker.gender.isNotBlank()) {
+                            DetailRow("🚻", "Gender", marker.gender)
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        DetailRow("📍", "Last Seen Location", marker.locationName)
+                        Spacer(Modifier.height(10.dp))
+                        DetailRow("📅", "Last Seen Date", marker.date.ifBlank { "Unknown" })
+                    } else {
+                        DetailRow("📍", "Location", marker.locationName)
+                        Spacer(Modifier.height(10.dp))
+                        DetailRow("📅", "Reported on", marker.date.ifBlank { "Unknown" })
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "This sighting has not been linked to any missing person report yet. " +
+                                    "If you recognise this individual, please contact the nearest authority.",
+                            style      = MaterialTheme.typography.bodySmall,
+                            color      = Color.Gray,
+                            lineHeight = 18.sp
+                        )
+                    }
+
                     Spacer(Modifier.height(20.dp))
-                    Text(
-                        "This sighting has not been linked to any missing person report yet. " +
-                                "If you recognise this individual, please contact the nearest authority.",
-                        style      = MaterialTheme.typography.bodySmall,
-                        color      = Color.Gray,
-                        lineHeight = 18.sp
-                    )
-                    Spacer(Modifier.height(20.dp))
+
+                    val ctaColor = if (marker.isMissingPerson) ColorMissing else ColorSighting
+                    val ctaText = if (marker.isMissingPerson) "View Case Timeline →" else "Got it"
+                    
                     Button(
-                        onClick  = onDismiss,
+                        onClick  = {
+                            onDismiss()
+                            if (marker.isMissingPerson) {
+                                onNavigateToTimeline(marker.id)
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         shape    = RoundedCornerShape(12.dp),
-                        colors   = ButtonDefaults.buttonColors(containerColor = ColorSighting)
+                        colors   = ButtonDefaults.buttonColors(containerColor = ctaColor)
                     ) {
-                        Text("Got it", fontWeight = FontWeight.Bold)
+                        Text(ctaText, fontWeight = FontWeight.Bold, color = Color.White)
                     }
                 }
             }
