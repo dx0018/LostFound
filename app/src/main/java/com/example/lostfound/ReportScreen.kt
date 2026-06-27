@@ -574,7 +574,8 @@ fun ReportScreenContent(
                                     contact = contact,
                                     onProgressUpdate = { progressText = it },
                                     onNavigateBack = onNavigateBack,
-                                    onHistoricalMatchesFound = { matches ->
+                                    onHistoricalMatchesFound = { personId, matches ->
+                                        currentMissingPersonId = personId
                                         historicalMatches = matches
                                         showMatchDialog = true
                                     },
@@ -689,7 +690,8 @@ fun ReportScreenContent(
                                                 contact = contact,
                                                 onProgressUpdate = { progressText = it },
                                                 onNavigateBack = onNavigateBack,
-                                                onHistoricalMatchesFound = { matches ->
+                                                onHistoricalMatchesFound = { personId, matches ->
+                                                    currentMissingPersonId = personId
                                                     historicalMatches = matches
                                                     showMatchDialog = true
                                                 },
@@ -1076,7 +1078,7 @@ private suspend fun executePublicationSequence(
     contact: String,
     onProgressUpdate: (String) -> Unit,
     onNavigateBack: () -> Unit,
-    onHistoricalMatchesFound: (List<SightingRecord>) -> Unit,
+    onHistoricalMatchesFound: (String, List<SightingRecord>) -> Unit,
     onDone: (Boolean) -> Unit
 ) {
     var uploadedPath: String? = null
@@ -1196,7 +1198,7 @@ private suspend fun executePublicationSequence(
 
         withContext(Dispatchers.Main) {
             if (foundMatches.isNotEmpty()) {
-                onHistoricalMatchesFound(foundMatches.sortedByDescending { it.aiConfidenceScore })
+                onHistoricalMatchesFound(personData.id, foundMatches.sortedByDescending { it.aiConfidenceScore })
             } else {
                 Toast.makeText(
                     context,
