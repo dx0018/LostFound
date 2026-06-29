@@ -1,6 +1,7 @@
 package com.example.lostfound
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -19,6 +20,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
@@ -32,8 +35,14 @@ sealed class TimelineEvent {
     abstract val photoUrl: String   // 🆕 改为 photoUrl
     abstract val thumbnailUrl: String
     abstract val matchedFaceUrl: String
+    abstract val reporterName: String
+    abstract val reporterPhone: String
 
-    data class CaseOpened(val person: MissingPerson) : TimelineEvent() {
+    data class CaseOpened(
+        val person: MissingPerson,
+        override val reporterName: String,
+        override val reporterPhone: String
+    ) : TimelineEvent() {
         override val timestamp = person.timestamp
         override val location = person.lastSeenLocation
         override val photoUrl = person.photoUrl
@@ -41,7 +50,11 @@ sealed class TimelineEvent {
         override val matchedFaceUrl = ""
     }
 
-    data class SightingConfirmed(val sighting: SightingRecord) : TimelineEvent() {
+    data class SightingConfirmed(
+        val sighting: SightingRecord,
+        override val reporterName: String,
+        override val reporterPhone: String
+    ) : TimelineEvent() {
         override val timestamp = sighting.timestamp
         override val location = sighting.location
         override val photoUrl = sighting.photoUrl
@@ -56,6 +69,7 @@ fun CaseTimelineScreen(missingPersonId: String, onNavigateBack: () -> Unit) {
     var isLoading by remember { mutableStateOf(true) }
     var timelineEvents by remember { mutableStateOf<List<TimelineEvent>>(emptyList()) }
     var personName by remember { mutableStateOf("Loading Case...") }
+    var enlargedPhotoUrl by remember { mutableStateOf<String?>(null) } // 🆕 State for clicked photo
 
     LaunchedEffect(missingPersonId) {
         try {
@@ -74,9 +88,43 @@ fun CaseTimelineScreen(missingPersonId: String, onNavigateBack: () -> Unit) {
 
                 val sightings = sightingsSnapshot.toObjects(SightingRecord::class.java)
 
+                // Dynamic Profile Loading
+                val userIds = mutableSetOf<String>()
+                if (mp.ownerId.isNotBlank()) userIds.add(mp.ownerId)
+                sightings.forEach { if (it.ownerId.isNotBlank()) userIds.add(it.ownerId) }
+
+                val profiles = mutableMapOf<String, UserProfile>()
+                userIds.forEach { uid ->
+                    try {
+                        val uSnap = db.collection("Users").document(uid).get().await()
+                        val uProfile = uSnap.toObject(UserProfile::class.java)
+                        if (uProfile != null) {
+                            profiles[uid] = uProfile
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
                 val combinedList = mutableListOf<TimelineEvent>()
-                combinedList.add(TimelineEvent.CaseOpened(mp))
-                sightings.forEach { combinedList.add(TimelineEvent.SightingConfirmed(it)) }
+                val mpProfile = profiles[mp.ownerId]
+                combinedList.add(
+                    TimelineEvent.CaseOpened(
+                        person = mp,
+                        reporterName = mpProfile?.name?.ifBlank { "Case Submitter" } ?: "Case Submitter",
+                        reporterPhone = mpProfile?.phone?.ifBlank { mp.contactPhone.ifBlank { "No contact phone" } } ?: mp.contactPhone.ifBlank { "No contact phone" }
+                    )
+                )
+                sightings.forEach { sig ->
+                    val sigProfile = profiles[sig.ownerId]
+                    combinedList.add(
+                        TimelineEvent.SightingConfirmed(
+                            sighting = sig,
+                            reporterName = sigProfile?.name?.ifBlank { "Sighting Reporter" } ?: "Sighting Reporter",
+                            reporterPhone = sigProfile?.phone?.ifBlank { "No phone number available" } ?: "No phone number available"
+                        )
+                    )
+                }
 
                 timelineEvents = combinedList.sortedBy { it.timestamp }
             } else {
@@ -97,16 +145,69 @@ fun CaseTimelineScreen(missingPersonId: String, onNavigateBack: () -> Unit) {
                                 .whereIn("status", listOf(SightingStatus.LINKED.name, SightingStatus.RESOLVED.name))
                                 .get().await().toObjects(SightingRecord::class.java)
 
+                            val userIds = mutableSetOf<String>()
+                            if (linkedMp.ownerId.isNotBlank()) userIds.add(linkedMp.ownerId)
+                            sightings.forEach { if (it.ownerId.isNotBlank()) userIds.add(it.ownerId) }
+
+                            val profiles = mutableMapOf<String, UserProfile>()
+                            userIds.forEach { uid ->
+                                try {
+                                    val uSnap = db.collection("Users").document(uid).get().await()
+                                    val uProfile = uSnap.toObject(UserProfile::class.java)
+                                    if (uProfile != null) {
+                                        profiles[uid] = uProfile
+                                    }
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+                            }
+
                             val combinedList = mutableListOf<TimelineEvent>()
-                            combinedList.add(TimelineEvent.CaseOpened(linkedMp))
-                            sightings.forEach { combinedList.add(TimelineEvent.SightingConfirmed(it)) }
+                            val mpProfile = profiles[linkedMp.ownerId]
+                            combinedList.add(
+                                TimelineEvent.CaseOpened(
+                                    person = linkedMp,
+                                    reporterName = mpProfile?.name?.ifBlank { "Case Submitter" } ?: "Case Submitter",
+                                    reporterPhone = mpProfile?.phone?.ifBlank { linkedMp.contactPhone.ifBlank { "No contact phone" } } ?: linkedMp.contactPhone.ifBlank { "No contact phone" }
+                                )
+                            )
+                            sightings.forEach { sig ->
+                                val sigProfile = profiles[sig.ownerId]
+                                combinedList.add(
+                                    TimelineEvent.SightingConfirmed(
+                                        sighting = sig,
+                                        reporterName = sigProfile?.name?.ifBlank { "Sighting Reporter" } ?: "Sighting Reporter",
+                                        reporterPhone = sigProfile?.phone?.ifBlank { "No phone number available" } ?: "No phone number available"
+                                    )
+                                )
+                            }
 
                             timelineEvents = combinedList.sortedBy { it.timestamp }
                         }
                     } else {
                         // Render orphan timeline with single Sighting node
                         personName = "Orphan Sighting Clue"
-                        timelineEvents = listOf(TimelineEvent.SightingConfirmed(sighting))
+                        
+                        var repName = "Sighting Reporter"
+                        var repPhone = "No phone number available"
+                        try {
+                            val uSnap = db.collection("Users").document(sighting.ownerId).get().await()
+                            val uProfile = uSnap.toObject(UserProfile::class.java)
+                            if (uProfile != null) {
+                                repName = uProfile.name.ifBlank { "Sighting Reporter" }
+                                repPhone = uProfile.phone.ifBlank { "No phone number available" }
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+
+                        timelineEvents = listOf(
+                            TimelineEvent.SightingConfirmed(
+                                sighting = sighting,
+                                reporterName = repName,
+                                reporterPhone = repPhone
+                            )
+                        )
                     }
                 } else {
                     personName = "Unknown Case"
@@ -147,15 +248,20 @@ fun CaseTimelineScreen(missingPersonId: String, onNavigateBack: () -> Unit) {
             ) {
                 itemsIndexed(timelineEvents) { index, event ->
                     val isLastItem = index == timelineEvents.lastIndex
-                    TimelineNode(event = event, isLast = isLastItem)
+                    TimelineNode(event = event, isLast = isLastItem, onImageClick = { enlargedPhotoUrl = it })
                 }
             }
+        }
+
+        // Full Screen Image Viewer Dialog
+        enlargedPhotoUrl?.let { url ->
+            ImageViewerDialog(imageUrl = url, onDismiss = { enlargedPhotoUrl = null })
         }
     }
 }
 
 @Composable
-fun TimelineNode(event: TimelineEvent, isLast: Boolean) {
+fun TimelineNode(event: TimelineEvent, isLast: Boolean, onImageClick: (String) -> Unit) {
     val formatter = remember { SimpleDateFormat("MMM dd, yyyy • HH:mm a", Locale.getDefault()) }
     val dateString = formatter.format(Date(event.timestamp))
 
@@ -221,23 +327,42 @@ fun TimelineNode(event: TimelineEvent, isLast: Boolean) {
                         text = titleText,
                         fontWeight = FontWeight.Bold, color = dotColor
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(text = "Location: ${event.location}", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    if (event is TimelineEvent.CaseOpened) {
+                        Text(text = "📅 Last Seen Date: ${event.person.lastSeenDate}", style = MaterialTheme.typography.bodyMedium)
+                        Text(text = "📍 Location: ${event.location}", style = MaterialTheme.typography.bodyMedium)
+                        Text(text = "👤 Reporter: ${event.reporterName}", style = MaterialTheme.typography.bodyMedium)
+                        Text(text = "📞 Contact Phone: ${event.reporterPhone}", style = MaterialTheme.typography.bodyMedium)
+                    } else if (event is TimelineEvent.SightingConfirmed) {
+                        Text(text = "📅 Sighting Date: ${event.sighting.sightingDate}", style = MaterialTheme.typography.bodyMedium)
+                        Text(text = "📍 Location: ${event.location}", style = MaterialTheme.typography.bodyMedium)
+                        Text(text = "👤 Sighting Reporter: ${event.reporterName}", style = MaterialTheme.typography.bodyMedium)
+                        Text(text = "📞 Contact Phone: ${event.reporterPhone}", style = MaterialTheme.typography.bodyMedium)
+                        if (event.sighting.estimatedFeatures.isNotBlank()) {
+                            Text(text = "📝 Est. Height/Age: ${event.sighting.estimatedFeatures}", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        if (event.sighting.clothingAppearance.isNotBlank()) {
+                            Text(text = "👕 Clothing: ${event.sighting.clothingAppearance}", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(8.dp))
 
                     val imageModel = event.matchedFaceUrl.ifBlank { event.thumbnailUrl.ifBlank { event.photoUrl } }
 
-                    // 🆕 Coil 异步加载 URL
+                    // 🆕 Coil 异步加载 URL (宽度撑满，高度自适应，点击放大)
                     if (imageModel.isNotBlank()) {
                         AsyncImage(
                             model = imageModel,
                             contentDescription = null,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(150.dp)
-                                .clip(RoundedCornerShape(8.dp)),
-                            contentScale = ContentScale.Crop
+                                .wrapContentHeight()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.Black.copy(alpha = 0.05f))
+                                .clickable { onImageClick(imageModel) },
+                            contentScale = ContentScale.FillWidth
                         )
                     } else {
                         Box(
@@ -252,6 +377,31 @@ fun TimelineNode(event: TimelineEvent, isLast: Boolean) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ImageViewerDialog(imageUrl: String, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable { onDismiss() },
+            contentAlignment = Alignment.Center
+        ) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = "Enlarged Image",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentHeight(),
+                contentScale = ContentScale.FillWidth
+            )
         }
     }
 }

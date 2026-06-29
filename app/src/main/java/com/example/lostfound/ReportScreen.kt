@@ -12,6 +12,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -106,6 +107,8 @@ fun ReportScreenContent(
     )
 
     var showMapPicker by remember { mutableStateOf(false) }
+    var showEnlargedImage by remember { mutableStateOf(false) }
+    var enlargedPhotoUrl by remember { mutableStateOf<String?>(null) }
 
     val fusedLocationClient = remember {
         LocationServices.getFusedLocationProviderClient(context)
@@ -224,6 +227,14 @@ fun ReportScreenContent(
         }
     }
 
+    if (showEnlargedImage && selectedBitmap != null) {
+        BitmapViewerDialog(bitmap = selectedBitmap!!, onDismiss = { showEnlargedImage = false })
+    }
+
+    enlargedPhotoUrl?.let { url ->
+        ImageViewerDialog(imageUrl = url, onDismiss = { enlargedPhotoUrl = null })
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -252,25 +263,47 @@ fun ReportScreenContent(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(200.dp)
+                    .wrapContentHeight()
                     .clip(RoundedCornerShape(16.dp))
                     .border(
                         2.dp,
                         MaterialTheme.colorScheme.outlineVariant,
                         RoundedCornerShape(16.dp)
                     )
-                    .clickable { galleryLauncher.launch("image/*") },
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    .let {
+                        if (selectedBitmap == null) {
+                            it.clickable { galleryLauncher.launch("image/*") }
+                        } else {
+                            it
+                        }
+                    },
                 contentAlignment = Alignment.Center
             ) {
                 if (selectedBitmap != null) {
-                    Image(
-                        bitmap = selectedBitmap!!.asImageBitmap(),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Image(
+                            bitmap = selectedBitmap!!.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .wrapContentHeight()
+                                .clickable { showEnlargedImage = true },
+                            contentScale = ContentScale.FillWidth
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        TextButton(
+                            onClick = { galleryLauncher.launch("image/*") }
+                        ) {
+                            Text("Change Photo", color = MaterialTheme.colorScheme.primary)
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.padding(vertical = 40.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         Icon(
                             Icons.Default.PersonAdd,
                             contentDescription = null,
@@ -759,13 +792,16 @@ fun ReportScreenContent(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     if (topMatch.thumbnailUrl.isNotBlank() || topMatch.photoUrl.isNotBlank()) {
+                        val imageUrl = topMatch.thumbnailUrl.ifBlank { topMatch.photoUrl }
                         AsyncImage(
-                            model = topMatch.thumbnailUrl.ifBlank { topMatch.photoUrl },
+                            model = imageUrl,
                             contentDescription = null,
                             modifier = Modifier
                                 .size(120.dp)
-                                .clip(RoundedCornerShape(8.dp)),
-                            contentScale = ContentScale.Crop
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.Black.copy(alpha = 0.05f))
+                                .clickable { enlargedPhotoUrl = imageUrl },
+                            contentScale = ContentScale.Fit
                         )
                     }
 
@@ -1228,5 +1264,55 @@ private suspend fun executePublicationSequence(
     } finally {
         extractor.close()
         mlKitDetector.close()
+    }
+}
+
+@Composable
+private fun BitmapViewerDialog(bitmap: Bitmap, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable { onDismiss() },
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "Enlarged Image",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentHeight(),
+                contentScale = ContentScale.FillWidth
+            )
+        }
+    }
+}
+
+@Composable
+private fun ImageViewerDialog(imageUrl: String, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable { onDismiss() },
+            contentAlignment = Alignment.Center
+        ) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = "Enlarged Image",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentHeight(),
+                contentScale = ContentScale.FillWidth
+            )
+        }
     }
 }

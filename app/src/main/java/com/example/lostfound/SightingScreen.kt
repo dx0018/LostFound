@@ -38,6 +38,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.google.android.gms.location.LocationServices
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FieldValue
@@ -95,6 +97,7 @@ private fun SightingScreenContent(
         initialSelectedDateMillis = System.currentTimeMillis()
     )
     var showMapPicker by remember { mutableStateOf(false) }
+    var showEnlargedImage by remember { mutableStateOf(false) }
 
     val fusedLocationClient = remember {
         LocationServices.getFusedLocationProviderClient(context)
@@ -381,6 +384,13 @@ private fun SightingScreenContent(
         }
     }
 
+    if (showEnlargedImage) {
+        val displayBitmap = resultBitmap ?: selectedBitmap
+        if (displayBitmap != null) {
+            BitmapViewerDialog(bitmap = displayBitmap, onDismiss = { showEnlargedImage = false })
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -409,8 +419,9 @@ private fun SightingScreenContent(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(280.dp)
-                    .clip(RoundedCornerShape(16.dp)),
+                    .wrapContentHeight()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
                 val displayBitmap = resultBitmap ?: selectedBitmap
@@ -418,17 +429,20 @@ private fun SightingScreenContent(
                     Image(
                         bitmap = displayBitmap.asImageBitmap(),
                         contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .wrapContentHeight()
+                            .clickable { showEnlargedImage = true },
+                        contentScale = ContentScale.FillWidth
                     )
                 } else {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.surfaceVariant
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text("No Image Selected")
-                        }
+                        Text("No Image Selected")
                     }
                 }
             }
@@ -1061,6 +1075,31 @@ private suspend fun uploadSighting(
                 Toast.LENGTH_SHORT
             ).show()
             onDone(false)
+        }
+    }
+}
+
+@Composable
+private fun BitmapViewerDialog(bitmap: Bitmap, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable { onDismiss() },
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "Enlarged Image",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentHeight(),
+                contentScale = ContentScale.FillWidth
+            )
         }
     }
 }
